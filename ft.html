@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Training & fine-tuning · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">05 · Training and fine-tuning</p>
+<h1>From raw text to a <em>useful model</em>: pretraining, fine-tuning, alignment</h1>
+<p class="lead">How a large language model is actually made. Pretraining on trillions of tokens, supervised fine-tuning, LoRA and QLoRA, preference tuning with RLHF and DPO, reinforcement learning with verifiable rewards, plus quantisation and distillation. Each stage has a live demo.</p>
+<div class="chips"><span class="chip">pretraining</span><span class="chip">scaling laws</span><span class="chip">SFT</span><span class="chip">LoRA · QLoRA</span><span class="chip">DPO · RLHF · GRPO</span><span class="chip">quantisation</span></div>
+</div><canvas id="heroCv" data-art="loss" aria-label="Loss curves falling during training"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="pipe"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>The pipeline, end to end</h2></div><label class="learned"><input type="checkbox" data-learn="pipe"> Got it</label></div>
+<div class="prose">
+<p>Modern language models are built in stages. Each stage changes <em>what data</em> the model sees and <em>what objective</em> it optimises, and each is far cheaper than the one before it. <strong>Pretraining</strong> gives broad knowledge. <strong>Post-training</strong> (everything after) shapes behaviour: follow instructions, match human preferences, reason, stay safe.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Walk through the stages</h3></div><p class="how">Pick a stage. The pulse shows data flowing in, the bar shows roughly how much compute it takes.</p>
+<div class="ctl"><div class="seg" role="group" aria-label="Stage" id="pSeg"></div></div>
+<canvas id="ftPipe" style="aspect-ratio:21/8" aria-label="Pipeline of training stages"></canvas>
+<div class="read"><div><small>Data</small><span id="pData">-</span></div><div><small>Objective</small><span id="pObj">-</span></div><div><small>Typical compute</small><span id="pCmp">-</span></div></div>
+<p class="note" id="pTxt"></p>
+</div>
+<div class="tips"><h4>Mental model</h4>
+<ul><li>Pretraining writes knowledge into the weights. Post-training mostly changes <em>which</em> of that knowledge is used, and how it is presented.</li><li>Small, clean, diverse post-training data usually beats large noisy data.</li><li>Always keep an evaluation set that you never train on, and re-run it after every stage.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="pre"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Pretraining and scaling laws</h2></div><label class="learned"><input type="checkbox" data-learn="pre"> Got it</label></div>
+<div class="prose">
+<p>Pretraining is <strong>next-token prediction</strong> on a huge text corpus. The loss is cross-entropy on every position at once, so one sequence of length T gives T training signals.</p>
+<div class="math">L(θ) = − (1/T) Σₜ log p_θ( xₜ | x₁ … xₜ₋₁ )</div>
+<p>Final loss follows a smooth pattern in model size N and training tokens D. The Chinchilla fit is</p>
+<div class="math">L(N, D) = E + A / N^α + B / D^β        compute ≈ 6 · N · D FLOPs
+E = 1.69,  A = 406.4,  B = 410.7,  α = 0.34,  β = 0.28</div>
+<p>For a fixed compute budget C, a model that is too big sees too few tokens, and a model that is too small is starved of capacity. There is a best split in between.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Spend a compute budget</h3></div><p class="how">Drag compute and model size. The curve is final loss for every model size at that budget. The dot is your choice and the diamond is the best split.</p>
+<div class="ctl"><label>Compute 10^<b id="scCV">23</b> FLOPs<input id="scC" type="range" min="19" max="26" step="0.1" value="23"></label><label>Parameters 10^<b id="scNV">9.5</b><input id="scN" type="range" min="7" max="12.5" step="0.05" value="9.5"></label></div>
+<canvas id="ftScale" style="aspect-ratio:21/9" aria-label="Loss against model size at fixed compute"></canvas>
+<div class="read"><div><small>Your model</small><span id="scMine">-</span></div><div><small>Your loss</small><span id="scLoss">-</span></div><div><small>Best split</small><span id="scBest">-</span></div><div><small>Best loss</small><span id="scBL">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · the objective and the budget</span><button type="button">Copy</button></div><pre>import torch, torch.nn.functional as F
+
+def lm_loss(logits, tokens):
+    # logits: (B, T, V), tokens: (B, T). Predict token t+1 from positions up to t.
+    return F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
+                           tokens[:, 1:].reshape(-1))
+
+def chinchilla_split(C):
+    # roughly 20 tokens per parameter at the compute-optimal point
+    N = (C / (6 * 20)) ** 0.5
+    return N, 20 * N</pre></div>
+<div class="tips"><h4>Practical notes</h4>
+<ul><li>Compute-optimal is not deployment-optimal. Models meant for heavy use are trained on far more than 20 tokens per parameter, because a smaller model is cheaper to serve forever.</li><li>Use a learning-rate warmup then cosine decay. Spikes in loss are usually a sign of bad data batches or too high a learning rate.</li><li>Train in bfloat16 with fp32 optimiser states. Log loss, gradient norm and learning rate at every step.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="data"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Data decides the model</h2></div><label class="learned"><input type="checkbox" data-learn="data"> Got it</label></div>
+<div class="prose"><p>Most quality comes from the data pipeline, not the architecture. A typical pretraining pipeline looks like this.</p></div>
+<div class="tw"><table><thead><tr><th>Step</th><th>What it does</th><th>Why</th></tr></thead><tbody>
+<tr><td>Language and quality filter</td><td>Keep the languages you want. Score pages with a small classifier or heuristics (length, symbol ratio, repetition).</td><td>Removes boilerplate and spam</td></tr>
+<tr><td>Exact and near deduplication</td><td>Hash documents (exact). MinHash with locality-sensitive hashing (near).</td><td>Repeated text gets memorised and wastes compute</td></tr>
+<tr><td>Decontamination</td><td>Remove text that matches your evaluation sets.</td><td>Otherwise benchmarks overstate ability</td></tr>
+<tr><td>Safety and privacy filters</td><td>Remove personal data and harmful content.</td><td>Lower risk at release</td></tr>
+<tr><td>Mixing</td><td>Set the share of web, code, books, maths, multilingual text.</td><td>Controls what the model is good at</td></tr>
+<tr><td>Annealing</td><td>End training on the highest-quality data with decaying learning rate.</td><td>Cheap gains in the final phase</td></tr>
+</tbody></table></div>
+<div class="code"><div class="code-h"><span>Python · MinHash near-duplicate detection</span><button type="button">Copy</button></div><pre>import hashlib, re
+
+def shingles(text, k=5):
+    w = re.findall(r"\w+", text.lower())
+    return {" ".join(w[i:i+k]) for i in range(max(1, len(w) - k + 1))}
+
+def minhash(shingle_set, num_perm=64):
+    sig = []
+    for seed in range(num_perm):
+        sig.append(min(int(hashlib.md5(f"{seed}{s}".encode()).hexdigest(), 16) for s in shingle_set))
+    return sig
+
+def jaccard_estimate(a, b):
+    return sum(x == y for x, y in zip(a, b)) / len(a)   # similarity of the two documents</pre></div>
+</section>
+
+<section class="sec" id="sft"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>Supervised fine-tuning (SFT)</h2></div><label class="learned"><input type="checkbox" data-learn="sft"> Got it</label></div>
+<div class="prose">
+<p>A pretrained model continues text. <strong>SFT</strong> (instruction tuning) trains it on example conversations so it answers instead. Data is (prompt, ideal response) pairs wrapped in a <strong>chat template</strong>. The key detail is <strong>loss masking</strong>: you usually compute the loss only on the assistant's tokens, so the model learns to produce answers, not to imitate the user.</p>
+<div class="math">L_SFT = − Σ over response tokens t of  log p_θ( yₜ | prompt, y₍<t₎ )</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Which tokens count?</h3></div><p class="how">Tokens in the loss are lit. Tokens that are only context are dimmed. Toggle masking to see the difference.</p>
+<div class="ctl"><label>Example<select id="mkEx"><option value="0">Short question</option><option value="1">Multi-turn chat</option></select></label><div class="seg" role="group" aria-label="Mask" id="mkSeg"><button type="button" data-k="resp" aria-pressed="true">Response only</button><button type="button" data-k="all" aria-pressed="false">Every token</button></div></div>
+<div class="tokbox" id="mkBox"></div>
+<div class="read"><div><small>Tokens in loss</small><span id="mkN">-</span></div><div><small>Total tokens</small><span id="mkT">-</span></div><div><small>Share of loss on the answer</small><span id="mkP">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · loss masking by hand, then with TRL</span><button type="button">Copy</button></div><pre>import torch
+
+def build_example(tokenizer, messages):
+    # messages = [{"role":"user","content":...}, {"role":"assistant","content":...}]
+    prompt = tokenizer.apply_chat_template(messages[:-1], tokenize=False, add_generation_prompt=True)
+    full   = prompt + messages[-1]["content"] + tokenizer.eos_token       # end-of-sequence is part of the answer
+    p_ids  = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+    f_ids  = tokenizer(full,   add_special_tokens=False)["input_ids"]
+    labels = [-100] * len(p_ids) + f_ids[len(p_ids):]                    # -100 is ignored by cross-entropy
+    return {"input_ids": f_ids, "labels": labels}
+
+# The same thing with the TRL library:
+from trl import SFTTrainer, SFTConfig
+trainer = SFTTrainer(model=model, train_dataset=ds,
+    args=SFTConfig(output_dir="sft", learning_rate=2e-5, num_train_epochs=2,
+                   per_device_train_batch_size=4, gradient_accumulation_steps=8,
+                   warmup_ratio=0.03, lr_scheduler_type="cosine", bf16=True,
+                   assistant_only_loss=True, packing=False))
+trainer.train()</pre></div>
+<div class="tw"><table><thead><tr><th>Setting</th><th>Full fine-tune</th><th>LoRA</th></tr></thead><tbody>
+<tr><td>Learning rate</td><td>1e-5 to 2e-5</td><td>1e-4 to 3e-4</td></tr>
+<tr><td>Epochs</td><td>1 to 3</td><td>1 to 3</td></tr>
+<tr><td>Effective batch size</td><td>32 to 128 sequences</td><td>16 to 64</td></tr>
+<tr><td>Warmup</td><td>3% of steps</td><td>3% of steps</td></tr>
+<tr><td>Data</td><td>1k to 100k clean examples</td><td>500 to 50k</td></tr>
+</tbody></table></div>
+<div class="tips trap"><h4>Common traps</h4><p>Training for too many epochs on a small SFT set makes the model memorise answers and forget general skills. Watch a held-out set and stop when it stops improving.</p></div>
+</section>
+
+<section class="sec" id="peft"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>Parameter-efficient fine-tuning: LoRA and QLoRA</h2></div><label class="learned"><input type="checkbox" data-learn="peft"> Got it</label></div>
+<div class="prose">
+<p>Full fine-tuning updates every weight and needs memory for gradients and optimiser states. <strong>LoRA</strong> freezes the weight W and learns a small low-rank update instead:</p>
+<div class="math">W' = W + (α / r) · B · A        W ∈ ℝ^(d×d),  B ∈ ℝ^(d×r),  A ∈ ℝ^(r×d),  r ≪ d</div>
+<p>Trainable parameters per matrix fall from d² to 2·d·r. The bet is that the useful change in weights is low-rank, which is usually true for adapting behaviour. <strong>QLoRA</strong> also stores the frozen base in 4-bit, so a 7B model fits in a small GPU.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>How much does rank r capture?</h3></div><p class="how">The grid shows an update to a weight matrix and its rank-r approximation. The curve shows the share of the update's energy kept as rank grows.</p>
+<div class="ctl"><label>Rank r <b id="loRV">4</b><input id="loR" type="range" min="1" max="32" step="1" value="4"></label><label>True rank of the update <b id="loKV">6</b><input id="loK" type="range" min="1" max="24" step="1" value="6"></label></div>
+<canvas id="ftLora" style="aspect-ratio:21/9" aria-label="Low-rank approximation of a weight update"></canvas>
+<div class="read"><div><small>Trainable vs full (d = 4096)</small><span id="loP">-</span></div><div><small>Energy kept</small><span id="loE">-</span></div></div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Will it fit on my GPU?</h3></div><p class="how">Rough memory for training with batch×sequence tokens. Real numbers vary with framework and kernels.</p>
+<div class="ctl"><label>Model<select id="mmM"><option value="1">1B</option><option value="3">3B</option><option value="7" selected>7B</option><option value="13">13B</option><option value="34">34B</option><option value="70">70B</option></select></label><label>Method<select id="mmT"><option value="full">Full fine-tune (bf16 + AdamW)</option><option value="lora" selected>LoRA (bf16 base)</option><option value="qlora">QLoRA (4-bit base)</option></select></label><label>LoRA rank <b id="mmRV">16</b><input id="mmR" type="range" min="4" max="128" step="4" value="16"></label><label>Tokens per step <b id="mmKV">4096</b><input id="mmK" type="range" min="512" max="32768" step="512" value="4096"></label><button class="btn" id="mmCk" type="button" aria-pressed="true">Gradient checkpointing on</button></div>
+<canvas id="ftMem" style="aspect-ratio:21/8" aria-label="Memory breakdown"></canvas>
+<div class="read"><div><small>Total</small><span id="mmTot">-</span></div><div><small>Trainable params</small><span id="mmTr">-</span></div><div><small>Fits on</small><span id="mmFit">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · QLoRA with PEFT and bitsandbytes</span><button type="button">Copy</button></div><pre>import torch
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+
+bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                         bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B", quantization_config=bnb)
+model = prepare_model_for_kbit_training(model)
+
+cfg = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, task_type="CAUSAL_LM",
+                 target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"])
+model = get_peft_model(model, cfg)
+model.print_trainable_parameters()          # typically well under 1% of the weights
+
+# After training: save the small adapter, or merge it into the base for deployment
+model.save_pretrained("adapter")
+merged = model.merge_and_unload()</pre></div>
+<div class="tw"><table><thead><tr><th>Method</th><th>What is trained</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Full fine-tuning</td><td>All weights</td><td>Best quality ceiling, highest cost and forgetting risk</td></tr>
+<tr><td>LoRA</td><td>Low-rank matrices on chosen layers</td><td>Small files, swap adapters per task, can merge</td></tr>
+<tr><td>QLoRA</td><td>LoRA on a 4-bit frozen base</td><td>Lowest memory, slightly slower</td></tr>
+<tr><td>DoRA</td><td>Direction and magnitude split of weights, with LoRA on direction</td><td>Sometimes better quality at the same rank</td></tr>
+<tr><td>Adapters</td><td>Small bottleneck layers inserted in blocks</td><td>Adds a little inference latency</td></tr>
+<tr><td>Prompt and prefix tuning</td><td>Learned vectors prepended to inputs or each layer</td><td>Very few parameters, weaker on hard tasks</td></tr>
+<tr><td>BitFit and layer freezing</td><td>Only biases, or only top layers</td><td>Cheap baseline</td></tr>
+</tbody></table></div>
+<div class="tips"><h4>LoRA tips</h4>
+<ul><li>Apply LoRA to all linear layers (attention and MLP), not only q and v. It usually helps.</li><li>Set α about 2×r as a start. Raise the learning rate compared with full fine-tuning (about 10×).</li><li>Rank 8 to 32 is enough for most tasks. Raise it only if training loss will not fall.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="land"><div class="sec-head"><div><div class="kick">Concept 06</div><h2>Why fine-tuning can forget</h2></div><label class="learned"><input type="checkbox" data-learn="land"> Got it</label></div>
+<div class="prose">
+<p>Picture the weights as a point on a landscape. Pretraining left you in a good region for general ability (the ring). The new task has its own minimum. Moving there lowers the new loss, but moving far from the old region raises the old loss: <strong>catastrophic forgetting</strong>.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Three ways to move to a new task</h3></div><p class="how">Drag to rotate. Yellow: small learning rate. Red: large learning rate, which overshoots and wanders. Orange: updates restricted to a low-dimensional direction, like LoRA.</p>
+<div class="ctl"><label>Learning rate <b id="ldLV">0.12</b><input id="ldL" type="range" min="0.02" max="0.6" step="0.01" value="0.12"></label><button class="btn" id="ldRe" type="button">Restart</button></div>
+<canvas id="ftLand" style="aspect-ratio:21/10" aria-label="3D loss landscape with three fine-tuning paths"></canvas>
+<div class="read"><div><small>Small LR · new / old loss</small><span id="ld0">-</span></div><div><small>Large LR · new / old loss</small><span id="ld1">-</span></div><div><small>Restricted · new / old loss</small><span id="ld2">-</span></div></div>
+</div>
+<div class="tips"><h4>Reducing forgetting</h4>
+<ul><li>Lower the learning rate and train for fewer steps.</li><li>Mix some general data (replay) into your fine-tuning set.</li><li>Use LoRA, or merge adapters at a reduced scale.</li><li>Evaluate on a general benchmark before and after, not only on the new task.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="pref"><div class="sec-head"><div><div class="kick">Concept 07</div><h2>Preference tuning: RLHF and DPO</h2></div><label class="learned"><input type="checkbox" data-learn="pref"> Got it</label></div>
+<div class="prose">
+<p>SFT copies good examples. Often it is easier to say which of two answers is <em>better</em> than to write a perfect one. Preference data is (prompt, chosen, rejected).</p>
+<p><strong>RLHF</strong> has three steps: train a <strong>reward model</strong> on preferences, then optimise the policy with RL (usually PPO) to maximise reward while staying near the SFT model through a KL penalty.</p>
+<div class="math">Bradley–Terry:  P(chosen ≻ rejected) = σ( r(x, y_w) − r(x, y_l) )
+RLHF objective:  max  E[ r(x, y) ] − β · KL( π_θ ‖ π_ref )</div>
+<p><strong>DPO</strong> skips the reward model and the RL loop. It turns the same objective into a simple classification-style loss on the policy itself:</p>
+<div class="math">L_DPO = − log σ( β · [ (log π_θ(y_w) − log π_ref(y_w)) − (log π_θ(y_l) − log π_ref(y_l)) ] )</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>The DPO loss</h3></div><p class="how">Δ is how much more the policy has moved toward the chosen answer than toward the rejected one, relative to the reference. The dot is where this example sits.</p>
+<div class="ctl"><label>β <b id="dpBV">0.10</b><input id="dpB" type="range" min="0.02" max="1" step="0.01" value="0.1"></label><label>Implicit reward gap Δ <b id="dpDV">0</b><input id="dpD" type="range" min="-60" max="60" step="1" value="0"></label></div>
+<canvas id="ftDpo" style="aspect-ratio:21/9" aria-label="DPO loss against reward gap"></canvas>
+<div class="read"><div><small>Loss</small><span id="dpL">-</span></div><div><small>P(chosen preferred)</small><span id="dpP">-</span></div><div><small>Gradient weight</small><span id="dpG">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · DPO loss and the TRL trainer</span><button type="button">Copy</button></div><pre>import torch, torch.nn.functional as F
+
+def dpo_loss(pol_w, pol_l, ref_w, ref_l, beta=0.1):
+    # each argument: summed log-prob of the full response, shape (B,)
+    delta = (pol_w - ref_w) - (pol_l - ref_l)
+    return -F.logsigmoid(beta * delta).mean()
+
+from trl import DPOTrainer, DPOConfig
+trainer = DPOTrainer(model=model, ref_model=None,        # None: PEFT uses the adapter-disabled model as reference
+    args=DPOConfig(output_dir="dpo", beta=0.1, learning_rate=5e-7,
+                   per_device_train_batch_size=2, gradient_accumulation_steps=16),
+    train_dataset=pref_ds)                              # columns: prompt, chosen, rejected
+trainer.train()</pre></div>
+<div class="tips"><h4>Preference-tuning tips</h4>
+<ul><li>DPO needs a very small learning rate (about 5e-7 for full, 5e-6 for LoRA). It is easy to over-train.</li><li>Start from an SFT model that already writes in the format you want.</li><li>Watch the chosen log-probability. If it falls a lot, the model is learning to avoid bad answers rather than produce good ones.</li><li>Variants such as IPO, KTO, SimPO and ORPO change the loss to fix specific issues. Try plain DPO first.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="rl"><div class="sec-head"><div><div class="kick">Concept 08</div><h2>Reward hacking and RL with verifiable rewards</h2></div><label class="learned"><input type="checkbox" data-learn="rl"> Got it</label></div>
+<div class="prose">
+<p>A reward model is only a <strong>proxy</strong> for what you want. Optimise it hard and the policy finds answers that score high but are not actually good. This is <strong>reward hacking</strong> (Goodhart's law). A simple way to see it is <strong>best-of-n</strong> sampling: draw n answers and keep the one with the best proxy score.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Best-of-n against a flawed reward</h3></div><p class="how">Each answer has true quality q and a proxy score that also rewards an exploitable trick. Picking the best proxy score first helps, then hurts.</p>
+<div class="ctl"><label>n (samples per prompt) <b id="bnNV">8</b><input id="bnN" type="range" min="0" max="8" step="0.1" value="3"></label><label>How exploitable the proxy is <b id="bnEV">0.6</b><input id="bnE" type="range" min="0" max="1.5" step="0.05" value="0.6"></label></div>
+<canvas id="ftBon" style="aspect-ratio:21/9" aria-label="Proxy and true reward against n"></canvas>
+<div class="read"><div><small>n</small><span id="bnR1">-</span></div><div><small>Proxy reward</small><span id="bnR2">-</span></div><div><small>True quality</small><span id="bnR3">-</span></div><div><small>KL cost (nats)</small><span id="bnR4">-</span></div></div>
+</div>
+<div class="prose">
+<p>When the answer can be <em>checked</em> (maths with a known answer, code with unit tests, formats with a parser), you can skip the learned reward model. <strong>RL with verifiable rewards (RLVR)</strong> gives reward 1 for a correct result and 0 otherwise. <strong>GRPO</strong> samples a group of answers per prompt and uses the group itself as the baseline:</p>
+<div class="math">Aᵢ = ( rᵢ − mean(r₁…r_G) ) / std(r₁…r_G)        no value network needed</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Group-relative advantage</h3></div><p class="how">Each bar is one sampled answer. Correct answers get positive advantage, wrong ones negative. If every answer is right or every answer is wrong, there is nothing to learn from.</p>
+<div class="ctl"><label>Chance the model is right <b id="grPV">0.4</b><input id="grP" type="range" min="0" max="1" step="0.05" value="0.4"></label><label>Group size G <b id="grGV">8</b><input id="grG" type="range" min="4" max="16" step="1" value="8"></label><button class="btn primary" id="grGo" type="button">Sample a new group</button></div>
+<canvas id="ftGrpo" style="aspect-ratio:21/8" aria-label="Rewards and advantages for a group of samples"></canvas>
+<div class="read"><div><small>Group mean reward</small><span id="grM">-</span></div><div><small>Std</small><span id="grS">-</span></div><div><small>Useful signal?</small><span id="grU">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · GRPO with a verifiable reward</span><button type="button">Copy</button></div><pre>import re
+from trl import GRPOTrainer, GRPOConfig
+
+def correct_answer(completions, answer, **kw):
+    # reward 1.0 if the final boxed number equals the known answer
+    out = []
+    for c, a in zip(completions, answer):
+        m = re.search(r"\\boxed\{([^}]*)\}", c)
+        out.append(1.0 if m and m.group(1).strip() == str(a) else 0.0)
+    return out
+
+trainer = GRPOTrainer(model="Qwen/Qwen2.5-1.5B-Instruct", reward_funcs=correct_answer,
+    args=GRPOConfig(output_dir="grpo", num_generations=8, learning_rate=1e-6,
+                    per_device_train_batch_size=8, max_completion_length=512, beta=0.0),
+    train_dataset=math_ds)                               # columns: prompt, answer
+trainer.train()</pre></div>
+<div class="tips trap"><h4>Common traps</h4><p>Verifiable rewards can still be gamed. A model may learn to print the answer format without reasoning, or to exploit a bug in the checker. Inspect sampled outputs, not only the reward curve.</p></div>
+</section>
+
+<section class="sec" id="comp"><div class="sec-head"><div><div class="kick">Concept 09</div><h2>Making models smaller: quantisation, distillation, merging</h2></div><label class="learned"><input type="checkbox" data-learn="comp"> Got it</label></div>
+<div class="prose">
+<p><strong>Quantisation</strong> stores weights in fewer bits. With absmax scaling a weight w becomes an integer q and is mapped back when used:</p>
+<div class="math">scale = max|w| / (2^(b−1) − 1)        q = round(w / scale)        ŵ = q · scale</div>
+<p>One large outlier forces a big scale, which wastes resolution for all other weights. The fix is to use a separate scale for each small <strong>group</strong> of weights.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Quantise a row of weights</h3></div><p class="how">Dots are the original weights, bars are what remains after rounding. Add an outlier and compare per-tensor with per-group scales.</p>
+<div class="ctl"><label>Bits <b id="qzBV">4</b><input id="qzB" type="range" min="2" max="8" step="1" value="4"></label><div class="seg" role="group" aria-label="Scale" id="qzSeg"><button type="button" data-k="t" aria-pressed="true">One scale for all</button><button type="button" data-k="g" aria-pressed="false">Scale per group of 16</button></div><button class="btn" id="qzOut" type="button" aria-pressed="true">Outlier on</button><button class="btn" id="qzNew" type="button">New weights</button></div>
+<canvas id="ftQuant" style="aspect-ratio:21/8" aria-label="Original and quantised weights"></canvas>
+<div class="read"><div><small>Mean squared error</small><span id="qzE">-</span></div><div><small>Memory vs 16-bit</small><span id="qzM">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · quantise, distil and merge</span><button type="button">Copy</button></div><pre>import torch, torch.nn.functional as F
+
+def quantize_absmax(w, bits=4, group=16):
+    w = w.reshape(-1, group)
+    scale = w.abs().amax(dim=1, keepdim=True) / (2 ** (bits - 1) - 1)
+    q = torch.round(w / scale).clamp(-(2 ** (bits - 1)), 2 ** (bits - 1) - 1)
+    return (q * scale).reshape(-1)
+
+def distill_loss(student_logits, teacher_logits, labels, T=2.0, alpha=0.5):
+    soft = F.kl_div(F.log_softmax(student_logits / T, -1), F.softmax(teacher_logits / T, -1),
+                    reduction="batchmean") * T * T                    # soft targets carry "dark knowledge"
+    hard = F.cross_entropy(student_logits, labels)
+    return alpha * soft + (1 - alpha) * hard
+
+def merge_models(state_dicts, weights):                               # simple weight averaging ("model soup")
+    return {k: sum(w * sd[k] for w, sd in zip(weights, state_dicts)) for k in state_dicts[0]}</pre></div>
+<div class="tw"><table><thead><tr><th>Technique</th><th>Idea</th><th>Use when</th></tr></thead><tbody>
+<tr><td>Post-training quantisation (GPTQ, AWQ)</td><td>Round weights using calibration data to limit error</td><td>Serving cheaply with little quality loss at 4–8 bits</td></tr>
+<tr><td>Quantisation-aware training</td><td>Simulate rounding during training</td><td>Need quality at very low bit widths</td></tr>
+<tr><td>Knowledge distillation</td><td>Student matches the teacher's output distribution</td><td>Want a small model close to a big one</td></tr>
+<tr><td>Pruning and sparsity</td><td>Remove low-importance weights or heads</td><td>Hardware supports sparse kernels</td></tr>
+<tr><td>Model merging</td><td>Average or combine weights of fine-tunes</td><td>Combine skills without extra training</td></tr>
+<tr><td>Speculative decoding</td><td>Small model drafts, big model verifies</td><td>Lower latency without changing outputs</td></tr>
+</tbody></table></div>
+</section>
+
+<section class="sec" id="guide"><div class="sec-head"><div><div class="kick">Concept 10</div><h2>Which method should I use?</h2></div><label class="learned"><input type="checkbox" data-learn="guide"> Got it</label></div>
+<div class="prose"><p>Answer three questions. The advice is a starting point, not a rule.</p></div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Method chooser</h3></div><p class="how">Pick your goal, your data and your hardware.</p>
+<div class="ctl"><label>Goal<select id="gdG"><option value="style">Change style, tone or output format</option><option value="know">Teach new facts or documents</option><option value="task">Improve one specific task</option><option value="pref">Make answers better liked or safer</option><option value="reason">Improve reasoning where answers can be checked</option><option value="small">Make it cheaper to run</option></select></label><label>Data you have<select id="gdD"><option value="few">Fewer than 1,000 examples</option><option value="mid">1,000 to 50,000 examples</option><option value="big">More than 50,000, or a large raw corpus</option></select></label><label>Hardware<select id="gdH"><option value="small">One consumer GPU (24 GB)</option><option value="mid">One data-centre GPU (80 GB)</option><option value="big">A multi-GPU cluster</option></select></label></div>
+<div class="tips" id="gdOut"></div>
+</div>
+</section>
+
+<section class="sec" id="minis"><div class="sec-head"><div><div class="kick">Concept 11</div><h2>Small details that matter</h2></div><label class="learned"><input type="checkbox" data-learn="minis"> Got it</label></div>
+<div class="mini-grid"><div class="mini"><h4>Chat template</h4><p>Every instruction model expects a specific wrapper of role markers and special tokens. Train and serve with the same template or quality drops.</p><div class="math">prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)</div><code class="i">print(prompt)</code></div><div class="mini"><h4>EOS token</h4><p>The model must learn to stop. Always append the end-of-sequence token to training responses.</p><div class="math">text = answer + tok.eos_token</div><code class="i">labels[-1] = tok.eos_token_id</code></div><div class="mini"><h4>Sequence packing</h4><p>Concatenate short examples into one long sequence to avoid padding waste. Use attention masks so examples do not see each other.</p><div class="math">efficiency = real_tokens / (batch * seq_len)</div><code class="i">SFTConfig(packing=True)</code></div><div class="mini"><h4>Gradient accumulation</h4><p>Add gradients over several small batches to mimic a large batch with less memory.</p><div class="math">effective_batch = micro_batch × accum_steps × n_gpus</div><code class="i">loss = loss / accum; loss.backward()</code></div><div class="mini"><h4>Gradient checkpointing</h4><p>Recompute activations in the backward pass instead of storing them. About 30% slower, much less memory.</p><div class="math">memory ≈ O(√L) activations instead of O(L)</div><code class="i">model.gradient_checkpointing_enable()</code></div><div class="mini"><h4>Mixed precision</h4><p>Compute in bf16, keep master weights and optimiser states in fp32. bf16 has fp32's range, so it avoids loss scaling.</p><div class="math">bf16: 8 exponent bits, 7 mantissa bits</div><code class="i">with torch.autocast("cuda", dtype=torch.bfloat16): ...</code></div><div class="mini"><h4>Rejection sampling</h4><p>Sample several answers, keep the best by a reward or checker, and fine-tune on them. A simple form of RL.</p><div class="math">keep y* = argmax_i r(x, yᵢ)</div><code class="i">best = max(samples, key=reward_fn)</code></div><div class="mini"><h4>Reference model</h4><p>DPO and RLHF compare against a frozen copy of the starting policy so updates stay close to it.</p><div class="math">KL(π_θ ‖ π_ref) = E[ log π_θ − log π_ref ]</div><code class="i">ref = copy.deepcopy(model).eval().requires_grad_(False)</code></div><div class="mini"><h4>Perplexity</h4><p>Exponent of average token loss. Lower is better. Compare only with the same tokeniser and data.</p><div class="math">PPL = exp( L )</div><code class="i">ppl = math.exp(loss.item())</code></div><div class="mini"><h4>Label smoothing</h4><p>Spread a little target probability over other tokens to reduce over-confidence.</p><div class="math">y_smooth = (1−ε) · y + ε / V</div><code class="i">F.cross_entropy(logits, y, label_smoothing=0.1)</code></div><div class="mini"><h4>Learning-rate for fine-tuning</h4><p>Use 10–100× smaller than pretraining. A too-large rate quickly erases pretrained knowledge.</p><div class="math">lr_ft ≈ 1e-5 ... 2e-5 (full)</div><code class="i">optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.0)</code></div><div class="mini"><h4>Evaluation harness</h4><p>Measure before and after on standard tasks plus your own held-out set. Include a check for general ability loss.</p><div class="math">Δ = score_after − score_before</div><code class="i">lm_eval --model hf --model_args pretrained=ckpt --tasks hellaswag,arc_easy</code></div></div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="ft"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="ft.js"></script>
+</body></html>

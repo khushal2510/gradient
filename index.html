@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero">
+<div class="hero-copy">
+<p class="eyebrow">Interactive machine learning</p>
+<h1>Learn ML by <em>poking it</em></h1>
+<p class="lead">From linear regression to world models. Every idea has the formula, a plain explanation, runnable code, and a demo you can drag, train or rotate in 3D. No install, no sign-up.</p>
+<div class="cta"><a class="btn primary" href="ml.html">Start with classical ML</a><a class="btn" href="play.html">Open the playbook</a></div>
+<div class="chips"><span class="chip">50+ live demos</span><span class="chip">3D transformer</span><span class="chip">3D diffusion</span><span class="chip">RL in 3D</span></div>
+</div>
+<canvas id="heroCv" data-art="net" aria-label="A small neural network passing signals forward"></canvas>
+</div>
+
+<div class="wrap" style="padding-block:24px 8px">
+<div class="sec-head"><div><div class="kick">Pages</div><h2>Pick a path</h2></div><span class="note" id="hmTot"></span></div>
+<div class="cards" id="hmCards"></div>
+</div>
+
+<div class="wrap" style="padding-block:32px">
+<div class="sec-head"><div><div class="kick">How it works</div><h2>Each concept, four ways</h2></div></div>
+<div class="cards">
+<div class="card"><span class="no">01</span><h3>Intuition</h3><p>A short explanation first, in plain words, before any symbols.</p></div>
+<div class="card"><span class="no">02</span><h3>Formula</h3><p>The maths where it helps, with each term explained.</p></div>
+<div class="card"><span class="no">03</span><h3>Code</h3><p>Short Python you can copy, using NumPy and PyTorch.</p></div>
+<div class="card"><span class="no">04</span><h3>Demo</h3><p>A live computation. Change a slider and watch what breaks.</p></div>
+</div>
+</div>
+
+<div class="wrap" style="padding-block:8px 40px">
+<div class="sec-head"><div><div class="kick">Suggested routes</div><h2>Where to start</h2></div></div>
+<div class="cards">
+<a class="card" href="ml.html"><span class="no">BEGINNER</span><h3>Foundations</h3><p>Classical ML, then neural nets. Gets you through gradient descent, overfitting and backprop.</p><span class="meta"><span>ml → nn</span><span>→</span></span></a>
+<a class="card" href="llm.html"><span class="no">LLMs</span><h3>How ChatGPT-style models work</h3><p>Neural nets, then tokens, attention and the 3D transformer.</p><span class="meta"><span>nn → llm</span><span>→</span></span></a>
+<a class="card" href="gen.html"><span class="no">GENERATIVE</span><h3>Making new data</h3><p>Autoencoders, GANs and diffusion, with guidance explained.</p><span class="meta"><span>nn → gen</span><span>→</span></span></a>
+<a class="card" href="rl.html"><span class="no">AGENTS</span><h3>Learning from reward</h3><p>Value iteration, Q-learning, policy gradients, then world models.</p><span class="meta"><span>rl</span><span>→</span></span></a>
+</div>
+</div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="index"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="index.js"></script>
+</body></html>

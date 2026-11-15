@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>RL & world models · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">08 · Reinforcement learning and world models</p>
+<h1>Learning by <em>acting</em>, and by imagining</h1>
+<p class="lead">An agent acts, gets rewards, and improves. Compute values with dynamic programming over a 3D state space, learn them from experience with Q-learning, compare exploration strategies, run policy gradients, and see why learning a model of the world lets an agent practise in its head.</p>
+<div class="chips"><span class="chip">MDP · Bellman</span><span class="chip">Q-learning</span><span class="chip">bandits</span><span class="chip">PPO · SAC</span><span class="chip">world models</span></div>
+</div><canvas id="heroCv" data-art="grid" aria-label="An agent walking through a grid to a goal"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="mdp"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>MDPs, returns and dynamic programming</h2></div><label class="learned"><input type="checkbox" data-learn="mdp"> Got it</label></div>
+<div class="prose">
+<p>Reinforcement learning is framed as a <strong>Markov decision process</strong>: states <code>s</code>, actions <code>a</code>, transition probabilities <code>P(s'|s,a)</code>, rewards <code>r</code> and a discount <code>γ</code>. The agent wants to maximise the <strong>return</strong>, the discounted sum of future rewards:</p>
+<div class="math">G_t = r_t + γ·r_(t+1) + γ²·r_(t+2) + …
+V^π(s)   = E[ G_t | s_t = s, policy π ]
+Q^π(s,a) = E[ G_t | s_t = s, a_t = a, then π ]
+Bellman optimality:  V*(s) = max_a Σ_s' P(s'|s,a) · [ r(s,a,s') + γ·V*(s') ]</div>
+<p>When the model <code>P</code> and <code>r</code> are known, <strong>dynamic programming</strong> solves it directly. <strong>Value iteration</strong> repeats the Bellman backup on every state until the values stop changing. The policy is then to take the action with the best backed-up value. Discount <code>γ</code> near 0 makes the agent short-sighted, and near 1 far-sighted.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Value iteration over a grid world (3D)</h3></div><p class="how">Column height is the value of each cell. The yellow cell is the goal (+1), the red cell is a pit (−1), grey blocks are walls, and every step costs 0.04. Press Sweep to apply one Bellman backup everywhere, or Run to animate. Raise the slip probability and see values near the pit drop. Drag to orbit.</p>
+<canvas id="viCv" style="aspect-ratio:16/10" aria-label="3D value function over a grid world"></canvas>
+<div class="ctl"><label>Discount γ <b id="viGV">0.95</b><input id="viG" type="range" min="0" max="0.99" step="0.01" value="0.95"></label><label>Slip probability <b id="viSV">0.20</b><input id="viS" type="range" min="0" max="0.6" step="0.05" value="0.2"></label>
+<div class="btns"><button class="btn primary" id="viRun" type="button">Run</button><button class="btn" id="viStep" type="button">Sweep</button><button class="btn" id="viReset" type="button">Reset</button></div></div>
+<div class="read"><div><small>Sweeps</small><span id="viN">0</span></div><div><small>Largest change</small><span id="viD">-</span></div><div><small>Start cell value</small><span id="viVs">-</span></div></div>
+<p class="hint3">Arrows show the greedy policy. Drag to orbit.</p>
+</div>
+<div class="code"><div class="code-h"><span>Python · value iteration</span><button type="button">Copy</button></div><pre>import numpy as np
+
+def value_iteration(P, R, gamma=0.95, tol=1e-6):
+    # P: (A, S, S) transition probabilities, R: (S, A) expected rewards
+    A, S, _ = P.shape
+    V = np.zeros(S)
+    while True:
+        Q = R + gamma * np.einsum("ast,t-&gt;sa", P, V)     # Bellman backup for every (s, a)
+        V_new = Q.max(axis=1)
+        if np.abs(V_new - V).max() &lt; tol:
+            return V_new, Q.argmax(axis=1)               # values and greedy policy
+        V = V_new</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Dynamic programming needs the model and a small state space. Everything after this page relaxes one of those two requirements.</li><li>The Bellman equation says a state's value equals the immediate reward plus the discounted value of where you land. Nearly every RL algorithm is a way of satisfying it.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="q"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Q-learning: learning values from experience</h2></div><label class="learned"><input type="checkbox" data-learn="q"> Got it</label></div>
+<div class="prose">
+<p>If the model is unknown, the agent learns by trying things. <strong>Q-learning</strong> keeps a table of action values and nudges each one toward a bootstrapped target after every step:</p>
+<div class="math">δ = r + γ · max_a' Q(s', a') − Q(s, a)          (temporal-difference error)
+Q(s, a) ← Q(s, a) + α · δ</div>
+<p>It is <strong>off-policy</strong>: it learns about the greedy policy while behaving with an exploratory one such as <strong>ε-greedy</strong> (random action with probability ε). <code>α</code> is the learning rate. Deep Q-networks (DQN) replace the table with a neural network and add a replay buffer and a target network for stability.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Watch an agent learn the grid (3D)</h3></div><p class="how">Same world as above, but now the agent knows nothing. Column height is the best learned Q value in each cell and the white dot is the agent. Early on, most values are zero. Watch value spread backward from the goal.</p>
+<canvas id="qlCv" style="aspect-ratio:16/10" aria-label="3D Q values and moving agent"></canvas>
+<div class="stage even"><canvas id="qlCurve" style="aspect-ratio:21/9" aria-label="Steps per episode"></canvas><div class="ctl" style="align-content:start"><label>Learning rate α <b id="qaV">0.50</b><input id="qlA" type="range" min="0.05" max="1" step="0.05" value="0.5"></label><label>Exploration ε <b id="qeV">0.20</b><input id="qlE" type="range" min="0" max="1" step="0.05" value="0.2"></label><label>Discount γ <b id="qgV">0.95</b><input id="qlG" type="range" min="0.5" max="0.99" step="0.01" value="0.95"></label></div></div>
+<div class="btns"><button class="btn primary" id="qlRun" type="button">Pause</button><button class="btn" id="qlReset" type="button">Reset</button></div>
+<div class="read"><div><small>Episodes</small><span id="qlN">0</span></div><div><small>Last episode length</small><span id="qlL">-</span></div><div><small>Success rate (last 20)</small><span id="qlS">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · tabular Q-learning</span><button type="button">Copy</button></div><pre>import numpy as np
+
+def q_learning(env, episodes=500, alpha=0.5, gamma=0.95, eps=0.2):
+    Q = np.zeros((env.n_states, env.n_actions))
+    rng = np.random.default_rng(0)
+    for _ in range(episodes):
+        s, done = env.reset(), False
+        while not done:
+            a = rng.integers(env.n_actions) if rng.random() &lt; eps else Q[s].argmax()
+            s2, r, done = env.step(a)
+            target = r + gamma * Q[s2].max() * (not done)     # no bootstrap after a terminal state
+            Q[s, a] += alpha * (target - Q[s, a])
+            s = s2
+    return Q</pre></div>
+<div class="tips trap"><h4>Common traps</h4>
+<ul><li>With ε = 0 the agent can lock onto the first path it finds and never discover a better one. With a very high ε it keeps wandering. Decay ε over time.</li><li>Rewards that are far away or rare (sparse) make learning slow. Reward shaping helps but can create loopholes the agent will exploit.</li><li>Function approximation plus bootstrapping plus off-policy data can diverge. That is the reason for target networks and replay.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="bandit"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Exploration versus exploitation: bandits</h2></div><label class="learned"><input type="checkbox" data-learn="bandit"> Got it</label></div>
+<div class="prose">
+<p>The simplest RL problem has no states: pull one of several slot machines, each with an unknown payout rate. You must balance <em>exploiting</em> the best-looking arm and <em>exploring</em> others. Strategies are compared by <strong>regret</strong>, the reward lost compared with always pulling the best arm.</p>
+<div class="math">ε-greedy:   explore with probability ε, otherwise the arm with the highest average
+UCB1:       choose argmax_a  [ mean_a + c · √( ln t / n_a ) ]       (optimism under uncertainty)
+Thompson:   sample a payout rate for each arm from its Beta posterior, pull the best sample</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Which strategy loses the least?</h3></div><p class="how">Five arms with hidden payout rates. Each curve is the average cumulative regret over 40 simulated runs of 1,000 pulls. Lower is better. Greedy often locks onto a bad arm.</p>
+<canvas id="bnCv" style="aspect-ratio:21/9" aria-label="Cumulative regret of four strategies"></canvas>
+<div class="legend"><span><i style="background:var(--muted)"></i>greedy</span><span><i style="background:var(--c1)"></i>ε-greedy (0.1)</span><span><i style="background:var(--c2)"></i>UCB1</span><span><i style="background:var(--c4)"></i>Thompson</span></div>
+<div class="btns"><button class="btn primary" id="bnGo" type="button">New arms and rerun</button></div>
+<div class="read"><div><small>Arm payout rates</small><span id="bnArms" style="font-size:.85rem">-</span></div><div><small>Final regret: greedy</small><span id="bnR0">-</span></div><div><small>ε-greedy</small><span id="bnR1">-</span></div><div><small>UCB1</small><span id="bnR2">-</span></div><div><small>Thompson</small><span id="bnR3">-</span></div></div>
+</div>
+</section>
+
+<section class="sec" id="pg"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>Policy gradients, actor-critic and PPO</h2></div><label class="learned"><input type="checkbox" data-learn="pg"> Got it</label></div>
+<div class="prose">
+<p>Instead of learning values and acting greedily, <strong>policy gradient</strong> methods learn the policy <code>π_θ(a|s)</code> directly and push its probabilities up for actions that led to high return:</p>
+<div class="math">∇J(θ) = E[ ∇ log π_θ(a|s) · A(s,a) ]                      A = G − b  (advantage: return minus a baseline)
+actor-critic:  a critic V_φ(s) provides the baseline, A ≈ r + γV(s') − V(s)
+PPO:           L = E[ min( ρ·A,  clip(ρ, 1−ε, 1+ε)·A ) ],   ρ = π_new(a|s) / π_old(a|s)</div>
+<p>The baseline does not change the expected gradient but cuts its variance a lot. PPO's clipping stops any single update from moving the policy too far, which makes training stable. It is the workhorse behind many robotics results and the RL step in much LLM post-training.</p>
+</div>
+<div class="cols2">
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>REINFORCE on a 3-action bandit</h3></div><p class="how">The policy is a softmax over three actions with true mean rewards 0.2, 0.5 and 0.8 (noisy). Run it with and without a baseline and compare how smoothly the probability of the best action rises.</p>
+<canvas id="pgCv" style="aspect-ratio:4/3" aria-label="Action probabilities over time"></canvas>
+<div class="legend"><span><i style="background:var(--muted)"></i>action 1 (0.2)</span><span><i style="background:var(--c1)"></i>action 2 (0.5)</span><span><i style="background:var(--c2)"></i>action 3 (0.8)</span></div>
+<div class="btns"><button class="btn primary" id="pgRun" type="button">Run 400 steps</button><button class="btn" id="pgBase" type="button" aria-pressed="true">Baseline on</button></div>
+<div class="read"><div><small>P(best action)</small><span id="pgP">-</span></div></div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>The PPO clipped objective</h3></div><p class="how">The objective is flat once the probability ratio leaves [1−ε, 1+ε] in the direction that would help, so the gradient vanishes there.</p>
+<canvas id="ppCv" style="aspect-ratio:4/3" aria-label="PPO clipped objective against ratio"></canvas>
+<div class="legend"><span><i style="background:var(--c1)"></i>advantage &gt; 0</span><span><i style="background:var(--c2)"></i>advantage &lt; 0</span></div>
+<div class="ctl"><label>Clip ε <b id="ppEV">0.20</b><input id="ppE" type="range" min="0.05" max="0.5" step="0.01" value="0.2"></label></div>
+</div>
+</div>
+<div class="code"><div class="code-h"><span>Python · the PPO loss</span><button type="button">Copy</button></div><pre>import torch
+
+def ppo_loss(logp_new, logp_old, adv, values, returns, entropy, clip=0.2, vf=0.5, ent=0.01):
+    ratio = torch.exp(logp_new - logp_old)
+    adv = (adv - adv.mean()) / (adv.std() + 1e-8)                    # normalise advantages
+    surr = torch.min(ratio * adv, torch.clamp(ratio, 1 - clip, 1 + clip) * adv)
+    policy_loss = -surr.mean()
+    value_loss = (values - returns).pow(2).mean()
+    return policy_loss + vf * value_loss - ent * entropy.mean()      # entropy bonus keeps exploring</pre></div>
+<div class="tw"><table><thead><tr><th>Algorithm</th><th>Type</th><th>Actions</th><th>Idea and typical use</th></tr></thead><tbody>
+<tr><td>Q-learning / DQN</td><td>Value, off-policy</td><td>Discrete</td><td>Deep network for Q with replay and a target network. Atari-style games.</td></tr>
+<tr><td>REINFORCE</td><td>Policy, on-policy</td><td>Either</td><td>Plain policy gradient. High variance, simple to understand.</td></tr>
+<tr><td>A2C / A3C</td><td>Actor-critic, on-policy</td><td>Either</td><td>Critic baseline plus parallel workers.</td></tr>
+<tr><td>TRPO / PPO</td><td>Actor-critic, on-policy</td><td>Either</td><td>Limit how far each update moves the policy. PPO is the common default.</td></tr>
+<tr><td>DDPG / TD3</td><td>Actor-critic, off-policy</td><td>Continuous</td><td>Deterministic policy gradient. TD3 adds tricks against overestimation.</td></tr>
+<tr><td>SAC</td><td>Actor-critic, off-policy</td><td>Continuous</td><td>Maximises reward plus entropy. Sample-efficient and robust for control.</td></tr>
+<tr><td>MCTS + learned nets</td><td>Planning</td><td>Discrete</td><td>Search guided by value and policy networks, as in AlphaGo-style systems.</td></tr>
+</tbody></table></div>
+</section>
+
+<section class="sec" id="world"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>World models: learning to imagine</h2></div><label class="learned"><input type="checkbox" data-learn="world"> Got it</label></div>
+<div class="prose">
+<p>Model-free methods need huge numbers of real interactions. A <strong>world model</strong> learns the environment's dynamics, how the next state and reward follow from the current state and an action, so the agent can <em>plan</em> or practise inside the model instead of the world.</p>
+<div class="math">encode:      z_t = enc(o_t)                       compress observations into a latent state
+dynamics:    z_(t+1) ~ f(z_t, a_t)                predict what happens next
+reward:      r_t ≈ g(z_t, a_t)
+plan:        choose actions whose imagined rollouts in f give the best return</div>
+<p>Landmarks, in rough order: <strong>Dyna</strong> (Sutton, 1990) mixed real experience with simulated updates from a learned model. <strong>World Models</strong> (Ha and Schmidhuber, 2018) trained a VAE for vision, an RNN for dynamics and a tiny controller. <strong>MuZero</strong> (DeepMind, 2019) learned a latent model that predicts only what is useful for planning (value, policy, reward) and searched in it. The <strong>Dreamer</strong> family (Hafner et al., 2019 to 2023) learns a latent dynamics model and trains the policy entirely on imagined rollouts. <strong>JEPA</strong> (LeCun, 2022 proposal; I-JEPA and V-JEPA models since) learns to predict in representation space rather than pixels. Large video world models such as Genie (DeepMind, 2024) generate interactive environments from learned dynamics.</p>
+<p>The payoff is <strong>sample efficiency</strong>, shown below. The risk is <strong>model error</strong>: planners exploit mistakes in an imperfect model, so errors compound over long imagined rollouts.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Real steps versus imagined steps (Dyna-Q)</h3></div><p class="how">The same grid, learned from scratch. After each real step the agent also replays n imagined transitions from a model it built from experience. Curves show steps needed to reach the goal per episode, averaged over 6 runs. More planning means fewer real steps.</p>
+<canvas id="dyCv" style="aspect-ratio:21/9" aria-label="Learning curves for different planning steps"></canvas>
+<div class="legend"><span><i style="background:var(--muted)"></i>n = 0 (no model)</span><span><i style="background:var(--c1)"></i>n = 10</span><span><i style="background:var(--c2)"></i>n = 50</span></div>
+<div class="btns"><button class="btn primary" id="dyGo" type="button">Run comparison</button></div>
+<div class="read"><div><small>Episodes to reach ≤ 15 steps, n = 0</small><span id="dyA">-</span></div><div><small>n = 10</small><span id="dyB">-</span></div><div><small>n = 50</small><span id="dyC">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · a latent dynamics model and random-shooting planner</span><button type="button">Copy</button></div><pre>import torch, torch.nn as nn
+
+class WorldModel(nn.Module):
+    def __init__(self, obs=8, act=2, z=32):
+        super().__init__()
+        self.enc = nn.Sequential(nn.Linear(obs, 64), nn.ReLU(), nn.Linear(64, z))
+        self.dyn = nn.Sequential(nn.Linear(z + act, 64), nn.ReLU(), nn.Linear(64, z))
+        self.rew = nn.Sequential(nn.Linear(z + act, 64), nn.ReLU(), nn.Linear(64, 1))
+
+    def loss(self, o, a, o_next, r):
+        z, z_next = self.enc(o), self.enc(o_next).detach()
+        za = torch.cat([z, a], -1)
+        return ((self.dyn(za) - z_next) ** 2).mean() + ((self.rew(za).squeeze(-1) - r) ** 2).mean()
+
+@torch.no_grad()
+def plan(model, o, horizon=12, candidates=256, act_dim=2):
+    z = model.enc(o).expand(candidates, -1)
+    A = torch.rand(candidates, horizon, act_dim) * 2 - 1              # random action sequences
+    ret = torch.zeros(candidates)
+    for t in range(horizon):                                           # imagine forward in latent space
+        za = torch.cat([z, A[:, t]], -1)
+        ret += model.rew(za).squeeze(-1)
+        z = model.dyn(za)
+    return A[ret.argmax(), 0]                                          # execute only the first action</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Re-plan every step (model predictive control) and execute only the first action, so model errors do not pile up.</li><li>Predicting in latent space avoids modelling every pixel, which wastes capacity on irrelevant detail.</li><li>Use an ensemble of models and treat disagreement as uncertainty, to avoid trusting a region the model has never seen.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="mini"><div class="sec-head"><div><div class="kick">Concept 06</div><h2>Small but important concepts</h2></div><label class="learned"><input type="checkbox" data-learn="mini"> Got it</label></div>
+<div class="prose"><p>The vocabulary and tricks every RL project leans on.</p></div>
+<div class="mini-grid"><div class="mini"><h4>Discount factor γ</h4><p>Weights future rewards. Also keeps infinite-horizon returns finite.</p><div class="math">G = Σ γᵏ r_(t+k)</div><code class="i">gamma = 0.99</code></div><div class="mini"><h4>Return versus reward</h4><p>Reward is one step's feedback. Return is the discounted total the agent actually optimises.</p><div class="math">G_t = r_t + γ·G_(t+1)</div><code class="i">G = r + gamma * G</code></div><div class="mini"><h4>Temporal-difference error</h4><p>The gap between the bootstrapped target and the current estimate. Drives all TD learning.</p><div class="math">δ = r + γV(s') − V(s)</div><code class="i">delta = r + gamma * V[s2] - V[s]</code></div><div class="mini"><h4>On-policy versus off-policy</h4><p>On-policy learns from data made by the current policy. Off-policy can reuse older data, for example from a replay buffer.</p><div class="math">PPO is on-policy, SAC and DQN are off-policy</div><code class="i">buffer.sample(256)</code></div><div class="mini"><h4>Replay buffer</h4><p>Store transitions and train on random minibatches. Breaks correlation between consecutive steps and reuses data.</p><div class="math">batch ~ Uniform(buffer)</div><code class="i">random.sample(buffer, 256)</code></div><div class="mini"><h4>Target network</h4><p>A slowly updated copy of the network used to compute targets, so the target does not chase itself.</p><div class="math">θ⁻ ← τθ + (1−τ)θ⁻</div><code class="i">soft_update(target, online, tau=0.005)</code></div><div class="mini"><h4>Advantage</h4><p>How much better an action is than the policy's average in that state.</p><div class="math">A(s,a) = Q(s,a) − V(s)</div><code class="i">adv = returns - values</code></div><div class="mini"><h4>GAE</h4><p>Generalised advantage estimation blends n-step returns to trade bias against variance.</p><div class="math">A = Σ (γλ)ᵏ δ_(t+k)</div><code class="i">compute_gae(rewards, values, gamma, lam)</code></div><div class="mini"><h4>Entropy bonus</h4><p>Reward policy randomness to keep exploring and avoid early collapse.</p><div class="math">J + β·H(π)</div><code class="i">loss -= 0.01 * dist.entropy().mean()</code></div><div class="mini"><h4>Reward shaping</h4><p>Add extra rewards that guide learning. Potential-based shaping provably keeps the optimal policy.</p><div class="math">r' = r + γΦ(s') − Φ(s)</div><code class="i">reward += gamma * phi(s2) - phi(s)</code></div><div class="mini"><h4>Sparse rewards</h4><p>Feedback only at the end. Hard to learn from. Use curriculum, shaping, demonstrations or intrinsic curiosity.</p><div class="math">r = 0 almost everywhere</div><code class="i">curriculum = [easy, medium, hard]</code></div><div class="mini"><h4>Offline RL</h4><p>Learn a policy from a fixed dataset without interacting. Needs care to avoid trusting actions never seen.</p><div class="math">maximise Q while staying near the data</div><code class="i">CQL, IQL, behaviour cloning baseline</code></div><div class="mini"><h4>Imitation learning</h4><p>Learn directly from expert demonstrations as supervised learning. A strong start before RL.</p><div class="math">min ‖π(s) − a_expert‖²</div><code class="i">F.mse_loss(policy(s), a_expert)</code></div><div class="mini"><h4>Sim-to-real</h4><p>Train in simulation, then deploy on hardware. Randomise physics so the policy survives the gap.</p><div class="math">domain randomisation</div><code class="i">mass = rng.uniform(0.8, 1.2)</code></div><div class="mini"><h4>RLHF as RL</h4><p>Language-model tuning treats the model as a policy, a reward model as the environment and PPO-style updates, with a KL penalty to the starting model.</p><div class="math">max E[r(x,y)] − β·KL(π ‖ π_ref)</div><code class="i">kl_penalty = beta * (logp - logp_ref)</code></div></div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="rl"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="rl.js"></script>
+</body></html>

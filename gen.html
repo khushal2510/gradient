@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Generative models · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">07 · Generative models</p>
+<h1>Learning to <em>create</em>: VAEs, GANs and diffusion</h1>
+<p class="lead">A generative model learns the shape of a data distribution well enough to draw new samples from it. Compress and decode with autoencoders, play the generator against a discriminator, then watch diffusion carve a 3D shape out of pure noise.</p>
+<div class="chips"><span class="chip">autoencoder · VAE</span><span class="chip">GAN</span><span class="chip">diffusion</span><span class="chip">guidance</span><span class="chip">latent space</span></div>
+</div><canvas id="heroCv" data-art="diffuse" aria-label="Points dissolving into noise and condensing back into a ring"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="ae"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>Autoencoders, PCA and the VAE</h2></div><label class="learned"><input type="checkbox" data-learn="ae"> Got it</label></div>
+<div class="prose">
+<p>An <strong>autoencoder</strong> squeezes data through a narrow <em>bottleneck</em> and tries to rebuild it. To succeed it must keep the important structure and discard the rest. The simplest case is linear: the best linear 1-D bottleneck is exactly the first principal component from PCA.</p>
+<div class="math">encoder:  z = f(x)        decoder:  x̂ = g(z)        loss = ‖x − x̂‖²
+PCA:      project onto the direction of largest variance</div>
+<p>A plain autoencoder has gaps in its latent space, so random points decode to junk. A <strong>variational autoencoder (VAE)</strong> fixes this. The encoder outputs a mean and variance, a latent is sampled from that Gaussian, and a KL term keeps the latents close to a standard normal. The latent space becomes smooth, so sampling from N(0, I) and decoding generates new data.</p>
+<div class="math">z = μ(x) + σ(x) ⊙ ε,  ε ~ N(0, I)                 (reparameterisation trick)
+loss = ‖x − x̂‖²  +  β · KL( N(μ, σ²) ‖ N(0, I) )
+KL = −½ Σ ( 1 + log σ² − μ² − σ² )</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Find the best 1-D bottleneck</h3></div><p class="how">Rotate the line. Each point is projected onto it (the encoder) and drawn back from there (the decoder). The error curve shows reconstruction error against angle. Its minimum is the first principal component.</p>
+<div class="stage even"><canvas id="aeCv" style="aspect-ratio:1" aria-label="Points projected onto a line"></canvas><canvas id="aeErr" style="aspect-ratio:1" aria-label="Reconstruction error against angle"></canvas></div>
+<div class="ctl"><label>Angle <b id="aeAV">30°</b><input id="aeA" type="range" min="0" max="180" step="1" value="30"></label><div class="btns"><button class="btn primary" id="aeSnap" type="button">Snap to PC1</button><button class="btn" id="aeNew" type="button">New data</button></div></div>
+<div class="read"><div><small>Reconstruction error</small><span id="aeE">-</span></div><div><small>Variance kept</small><span id="aeV">-</span></div><div><small>Best possible error</small><span id="aeB">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · a small VAE in PyTorch</span><button type="button">Copy</button></div><pre>import torch, torch.nn as nn, torch.nn.functional as F
+
+class VAE(nn.Module):
+    def __init__(self, d_in=784, d_z=16):
+        super().__init__()
+        self.enc = nn.Sequential(nn.Linear(d_in, 256), nn.ReLU())
+        self.mu, self.logvar = nn.Linear(256, d_z), nn.Linear(256, d_z)
+        self.dec = nn.Sequential(nn.Linear(d_z, 256), nn.ReLU(), nn.Linear(256, d_in))
+    def forward(self, x):
+        h = self.enc(x)
+        mu, logvar = self.mu(h), self.logvar(h)
+        z = mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)       # reparameterisation
+        return self.dec(z), mu, logvar
+
+def vae_loss(x, x_hat, mu, logvar, beta=1.0):
+    recon = F.mse_loss(x_hat, x, reduction="sum") / x.size(0)
+    kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / x.size(0)
+    return recon + beta * kl
+
+# New samples: decode random latents
+# samples = model.dec(torch.randn(16, 16))</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>The weight β trades sharpness for smoothness. Large β gives a tidy latent space but blurrier outputs.</li><li>VAE images look blurry because the pixel loss averages over possibilities. That is why latent diffusion models use a VAE only as a compressor and let diffusion do the generating.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="gan"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Generative adversarial networks</h2></div><label class="learned"><input type="checkbox" data-learn="gan"> Got it</label></div>
+<div class="prose">
+<p>A <strong>GAN</strong> trains two networks in a game. The <strong>generator</strong> G turns noise into samples. The <strong>discriminator</strong> D tries to tell real from fake. G is rewarded for fooling D.</p>
+<div class="math">min_G max_D   E_x~data[ log D(x) ]  +  E_z~noise[ log(1 − D(G(z))) ]
+for a fixed G the best discriminator is   D*(x) = p_data(x) / ( p_data(x) + p_G(x) )</div>
+<p>When the generator matches the data perfectly, D* equals ½ everywhere: the discriminator cannot do better than guessing. GANs give sharp samples and fast generation but are notoriously hard to train: they can <em>mode collapse</em> (cover only a few kinds of samples) or oscillate.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>The optimal discriminator in 1D</h3></div><p class="how">The real data is a fixed bell curve. Move the generator's mean and spread and watch D*(x), the best possible discriminator, flatten toward ½ as the generator improves. Press Animate to move the generator toward the data, like training would.</p>
+<canvas id="ganCv" style="aspect-ratio:21/9" aria-label="Real and generated densities with optimal discriminator"></canvas>
+<div class="legend"><span><i style="background:var(--c1)"></i>real data</span><span><i style="background:var(--c2)"></i>generator</span><span><i style="background:#fff"></i>D*(x), right axis 0 to 1</span></div>
+<div class="ctl"><label>Generator mean μ <b id="gnMV">-2.0</b><input id="gnM" type="range" min="-3" max="5" step="0.05" value="-2"></label><label>Generator spread σ <b id="gnSV">0.5</b><input id="gnS" type="range" min="0.3" max="2.5" step="0.05" value="0.5"></label><div class="btns"><button class="btn primary" id="gnGo" type="button">Animate training</button><button class="btn" id="gnRe" type="button">Reset</button></div></div>
+<div class="read"><div><small>Jensen–Shannon divergence</small><span id="gnJ">-</span></div><div><small>D* at the real mean</small><span id="gnD">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · one GAN training step</span><button type="button">Copy</button></div><pre>import torch, torch.nn as nn
+
+G = nn.Sequential(nn.Linear(64, 256), nn.ReLU(), nn.Linear(256, 784), nn.Tanh())
+D = nn.Sequential(nn.Linear(784, 256), nn.LeakyReLU(0.2), nn.Linear(256, 1))
+optG = torch.optim.Adam(G.parameters(), 2e-4, betas=(0.5, 0.999))
+optD = torch.optim.Adam(D.parameters(), 2e-4, betas=(0.5, 0.999))
+bce = nn.BCEWithLogitsLoss()
+
+def step(real):                                  # real: (B, 784)
+    B = real.size(0)
+    fake = G(torch.randn(B, 64))
+    # 1) discriminator: real -&gt; 1, fake -&gt; 0
+    lossD = bce(D(real), torch.ones(B, 1)) + bce(D(fake.detach()), torch.zeros(B, 1))
+    optD.zero_grad(); lossD.backward(); optD.step()
+    # 2) generator: make D say 1 for fakes (the non-saturating loss)
+    lossG = bce(D(fake), torch.ones(B, 1))
+    optG.zero_grad(); lossG.backward(); optG.step()</pre></div>
+<div class="tips"><h4>Industry now</h4><ul><li>GANs are fast at inference and still appear in super-resolution, real-time video and some audio. For image and video generation, products are built on <strong>diffusion and flow-matching</strong> models, which train more stably and cover the data better.</li></ul></div>
+</section>
+
+<section class="sec" id="diff"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Diffusion models in 3D</h2></div><label class="learned"><input type="checkbox" data-learn="diff"> Got it</label></div>
+<div class="prose">
+<p>Diffusion models turn generation into many small denoising steps. The <strong>forward process</strong> gradually mixes data with Gaussian noise until nothing is left but noise. A network is trained to undo one step, and <strong>sampling</strong> starts from pure noise and applies the learned reverse step repeatedly.</p>
+<div class="math">forward (closed form):  x_t = √ᾱ_t · x₀ + √(1 − ᾱ_t) · ε,     ε ~ N(0, I)
+training loss:           E ‖ ε − ε_θ(x_t, t) ‖²                    (predict the noise)
+DDIM step (η = 0):       x̂₀ = (x_t − √(1−ᾱ_t)·ε_θ) / √ᾱ_t
+                         x_(t−1) = √ᾱ_(t−1) · x̂₀ + √(1 − ᾱ_(t−1)) · ε_θ</div>
+<p>ᾱ<sub>t</sub> falls from about 1 (clean) to about 0 (pure noise) along the <em>noise schedule</em>. Predicting the noise is equivalent to learning the <strong>score</strong>, the direction toward higher data density: <code>∇ log p(x_t) = −ε_θ / √(1−ᾱ_t)</code>.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Carve a shape out of noise</h3></div><p class="how">The target is a cloud of points on a 3D shape. Drag the slider to noise it (forward process). Press Generate to run the reverse DDIM sampler from pure noise. To stay exact and instant, the denoiser here is the true score of the training points rather than a trained network, so the samples land on the data. Drag the view to orbit.</p>
+<canvas id="dfCv" style="aspect-ratio:16/10" aria-label="3D point cloud being noised and denoised"></canvas>
+<div class="ctl"><label>Noise level t <b id="dfTV">0</b><input id="dfT" type="range" min="0" max="50" step="1" value="0"></label>
+<label>Shape<select id="dfS"><option value="knot">Trefoil knot</option><option value="torus">Torus</option><option value="helix">Double helix</option></select></label>
+<div class="btns"><button class="btn primary" id="dfGo" type="button">Generate from noise</button><button class="btn" id="dfRe" type="button">Reset to data</button></div></div>
+<div class="read"><div><small>Step t</small><span id="dfT2">0</span></div><div><small>Signal kept (√ᾱ)</small><span id="dfSg">100%</span></div><div><small>Noise added (√(1−ᾱ))</small><span id="dfNs">0%</span></div></div>
+<p class="hint3">Drag to orbit.</p>
+</div>
+<div class="code"><div class="code-h"><span>Python · DDPM training step and DDIM sampling loop</span><button type="button">Copy</button></div><pre>import torch, math
+
+T = 1000
+ab = torch.tensor([math.cos((t / T + 0.008) / 1.008 * math.pi / 2) ** 2 for t in range(T + 1)])
+ab = ab / ab[0]                                            # cosine schedule: alpha-bar
+
+def train_step(model, x0, opt):
+    t = torch.randint(1, T + 1, (x0.size(0),))
+    eps = torch.randn_like(x0)
+    a = ab[t].view(-1, *[1] * (x0.dim() - 1))
+    xt = a.sqrt() * x0 + (1 - a).sqrt() * eps               # noise the data
+    loss = ((model(xt, t) - eps) ** 2).mean()                # predict the noise
+    opt.zero_grad(); loss.backward(); opt.step()
+    return loss.item()
+
+@torch.no_grad()
+def sample(model, shape, steps=50):
+    x = torch.randn(shape)
+    ts = torch.linspace(T, 0, steps + 1).long()
+    for t, t_prev in zip(ts[:-1], ts[1:]):
+        eps = model(x, t.expand(shape[0]))
+        x0 = (x - (1 - ab[t]).sqrt() * eps) / ab[t].sqrt()
+        x = ab[t_prev].sqrt() * x0 + (1 - ab[t_prev]).sqrt() * eps    # DDIM, eta = 0
+    return x</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Fewer sampling steps (DDIM, DPM-Solver, distillation) trade a little quality for large speed gains.</li><li>An exact score on a finite dataset reproduces the training points. Real networks generalise because they are smooth and share structure across inputs.</li><li>The noise schedule matters. Very noisy start points need enough steps near the high-noise end, where structure is decided.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="guide"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>Guidance, latents and modern designs</h2></div><label class="learned"><input type="checkbox" data-learn="guide"> Got it</label></div>
+<div class="prose">
+<p>Text-to-image systems add three ideas on top of plain diffusion:</p>
+<ul><li><strong>Latent diffusion.</strong> Run diffusion in the compressed latent space of a VAE rather than pixels. It is far cheaper, and a decoder turns the final latent back into an image.</li><li><strong>Conditioning.</strong> A text encoder produces embeddings that the denoiser (a U-Net or a diffusion transformer, DiT) reads through cross-attention.</li><li><strong>Classifier-free guidance (CFG).</strong> Train with the condition randomly dropped, then at sampling time push the prediction away from the unconditional one and toward the conditional one.</li></ul>
+<div class="math">ε̃ = ε_uncond + w · ( ε_cond − ε_uncond )        w = 1 is plain conditional sampling; w > 1 follows the prompt harder
+equivalent target density:  p̃(x) ∝ p(x | c)^w · p(x)^(1−w)</div>
+<p><strong>Flow matching</strong> (and rectified flow) is a close relative: it trains a network to predict the velocity along a straight path from noise to data, which allows sampling in few steps. Several recent image and video models use it.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>What the guidance scale does</h3></div><p class="how">The unconditional model covers two kinds of sample, at −1 and +1. The prompt asks for the left one. Raise w and the guided density concentrates harder on the prompt, at the cost of variety.</p>
+<canvas id="cfCv" style="aspect-ratio:21/9" aria-label="Guided density curves"></canvas>
+<div class="legend"><span><i style="background:var(--muted)"></i>unconditional p(x)</span><span><i style="background:var(--c1)"></i>conditional p(x|c)</span><span><i style="background:var(--c2)"></i>guided density</span></div>
+<div class="ctl"><label>Guidance scale w <b id="cfWV">3.0</b><input id="cfW" type="range" min="0" max="8" step="0.1" value="3"></label></div>
+<div class="read"><div><small>Spread of guided samples (σ)</small><span id="cfS">-</span></div><div><small>Mean position</small><span id="cfM">-</span></div></div>
+</div>
+</section>
+
+<section class="sec" id="mini"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>Small but important concepts</h2></div><label class="learned"><input type="checkbox" data-learn="mini"> Got it</label></div>
+<div class="prose"><p>Terms you will see in every generative paper.</p></div>
+<div class="mini-grid"><div class="mini"><h4>KL divergence</h4><p>How far one distribution is from another. Not symmetric, and zero only when they match.</p><div class="math">KL(p‖q) = Σ p · log(p / q)</div><code class="i">F.kl_div(q.log(), p, reduction="batchmean")</code></div><div class="mini"><h4>ELBO</h4><p>The VAE objective: a lower bound on data log-likelihood. Reconstruction minus a KL regulariser.</p><div class="math">log p(x) ≥ E_q[log p(x|z)] − KL(q(z|x)‖p(z))</div><code class="i">loss = recon + beta * kl</code></div><div class="mini"><h4>Noise schedule</h4><p>Controls how fast signal is destroyed. Linear, cosine and shifted schedules all exist.</p><div class="math">ᾱ_t = Π (1 − β_s)</div><code class="i">ab = torch.cumprod(1 - betas, 0)</code></div><div class="mini"><h4>Signal-to-noise ratio</h4><p>How much clean signal versus noise a latent holds at step t. Many modern parametrisations are built around it.</p><div class="math">SNR(t) = ᾱ_t / (1 − ᾱ_t)</div><code class="i">snr = ab / (1 - ab)</code></div><div class="mini"><h4>Score function</h4><p>The gradient of the log density. Points toward more likely data. Diffusion learns it for noisy data.</p><div class="math">s(x) = ∇ₓ log p(x)</div><code class="i">torch.autograd.grad(log_p.sum(), x)</code></div><div class="mini"><h4>v-prediction</h4><p>Predict a mix of noise and data instead of noise alone. More stable at extreme noise levels.</p><div class="math">v = √ᾱ·ε − √(1−ᾱ)·x₀</div><code class="i">target = a.sqrt() * eps - (1 - a).sqrt() * x0</code></div><div class="mini"><h4>Classifier guidance</h4><p>Steer sampling with the gradient of a separate classifier. CFG replaced it by using the model itself.</p><div class="math">∇ₓ log p(c | x_t) added to the score</div><code class="i">grad = autograd.grad(logp_c, x_t)</code></div><div class="mini"><h4>U-Net and DiT</h4><p>Two common denoiser designs. A U-Net is a convolutional encoder–decoder with skip links. A DiT is a transformer over patches.</p><div class="math">ε_θ(x_t, t, c)</div><code class="i">DiT(depth=28, hidden=1152, patch=2)</code></div><div class="mini"><h4>FID</h4><p>Fréchet Inception Distance: compares statistics of real and generated image features. Lower is better.</p><div class="math">FID = ‖μ₁ − μ₂‖² + Tr(Σ₁ + Σ₂ − 2(Σ₁Σ₂)^½)</div><code class="i">torchmetrics FrechetInceptionDistance</code></div><div class="mini"><h4>Mode collapse</h4><p>A GAN generator that produces only a few outputs because they fool D.</p><div class="math">p_G covers a small part of p_data</div><code class="i">minibatch discrimination, Wasserstein loss</code></div><div class="mini"><h4>Wasserstein GAN</h4><p>Uses an earth-mover distance for a smoother, more informative gradient than the original loss.</p><div class="math">max_D E[D(real)] − E[D(fake)], D Lipschitz</div><code class="i">gradient penalty on D</code></div><div class="mini"><h4>VQ-VAE</h4><p>Autoencoder with a discrete codebook of latents. Image tokens for autoregressive and masked generators.</p><div class="math">z_q = nearest codebook vector</div><code class="i">vector_quantize(z, codebook)</code></div><div class="mini"><h4>Inpainting</h4><p>Fill a masked region by running diffusion while keeping the known pixels fixed at each step.</p><div class="math">x_t = m ⊙ x_t^known + (1−m) ⊙ x_t^gen</div><code class="i">pipe(prompt, image=img, mask_image=mask)</code></div><div class="mini"><h4>ControlNet and adapters</h4><p>Add trainable side networks (edges, depth, pose) or LoRA adapters to steer a frozen diffusion model.</p><div class="math">ε_θ(x_t, t, c, control)</div><code class="i">ControlNetModel.from_pretrained(...)</code></div><div class="mini"><h4>Latent space interpolation</h4><p>Blend two latents and decode to morph smoothly between samples. For Gaussians, spherical interpolation behaves better.</p><div class="math">z = slerp(z₁, z₂, α)</div><code class="i">torch.lerp(z1, z2, 0.5)</code></div></div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="gen"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="gen.js"></script>
+</body></html>

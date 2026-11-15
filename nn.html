@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Neural nets · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">02 · Neural networks</p>
+<h1>Neural nets, <em>one neuron at a time</em></h1>
+<p class="lead">A neural network is a stack of simple functions whose parameters are tuned by gradient descent. Build it up from a single neuron, watch backpropagation compute gradients, train a real network in your browser, and race optimisers across a 3D loss landscape.</p>
+<div class="chips"><span class="chip">activations</span><span class="chip">backprop</span><span class="chip">optimisers</span><span class="chip">initialisation</span><span class="chip">regularisation</span></div>
+</div><canvas id="heroCv" data-art="loss" aria-label="Animated loss curve with a ball rolling down"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="neuron"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>The neuron and its activation function</h2></div><label class="learned"><input type="checkbox" data-learn="neuron"> Got it</label></div>
+<div class="prose">
+<p>A neuron takes inputs <code>x</code>, forms a weighted sum plus a bias, and passes it through a nonlinear <strong>activation</strong>:</p>
+<div class="math">z = w₁x₁ + w₂x₂ + … + b = w·x + b
+a = f(z)</div>
+<p>Without the nonlinearity, any stack of layers collapses into one linear map. The activation is what lets depth add power. A <em>layer</em> is many neurons sharing the same inputs, written as a matrix product <code>a = f(W x + b)</code>, and a <em>network</em> chains layers.</p>
+<p>The choice of activation affects how gradients flow. Compare the functions below and look at their derivatives, because that is what backpropagation multiplies by.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Activation function explorer</h3></div><p class="how">Choose a function and slide x. The yellow curve is f(x) and the red curve is its slope f'(x). Notice where the slope goes to zero: those regions stop learning.</p>
+<canvas id="actCv" style="aspect-ratio:21/9" aria-label="Activation function and derivative"></canvas>
+<div class="ctl"><label>Function<select id="actSel"><option value="relu">ReLU</option><option value="leaky">Leaky ReLU</option><option value="sigmoid">Sigmoid</option><option value="tanh">Tanh</option><option value="gelu">GELU</option><option value="silu">SiLU / Swish</option><option value="softplus">Softplus</option></select></label>
+<label>x <b id="actXV">0.5</b><input id="actX" type="range" min="-5" max="5" step="0.05" value="0.5"></label></div>
+<div class="read"><div><small>f(x)</small><span id="actF">-</span></div><div><small>f'(x)</small><span id="actD">-</span></div></div>
+<p class="note" id="actNote"></p>
+</div>
+<div class="code"><div class="code-h"><span>Python · the same functions in PyTorch</span><button type="button">Copy</button></div><pre>import torch, torch.nn.functional as F
+
+x = torch.linspace(-5, 5, 11, requires_grad=True)
+for name, fn in [("relu", F.relu), ("sigmoid", torch.sigmoid), ("tanh", torch.tanh),
+                 ("gelu", F.gelu), ("silu", F.silu)]:
+    y = fn(x)
+    y.sum().backward()               # gradient of each output w.r.t. its own x
+    print(name, x.grad.detach().numpy().round(2))
+    x.grad = None</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Default to ReLU (or GELU / SiLU in transformers) in hidden layers. Use sigmoid only for a binary output and softmax for multi-class outputs.</li><li>Sigmoid and tanh saturate: their slope is near zero for large |x|. Stacked deep, gradients shrink toward nothing.</li><li>A ReLU neuron whose input is always negative outputs zero and gets zero gradient. That "dead ReLU" problem is why Leaky ReLU exists.</li></ul>
+</div>
+<div class="tips"><h4>Industry now</h4><ul><li>Sigmoid and tanh survive mainly as gates and output layers. Hidden layers in modern transformers use <strong>GELU</strong> or gated variants such as <strong>SwiGLU</strong>. CNNs still use ReLU or SiLU.</li></ul></div>
+</section>
+
+<section class="sec" id="loss"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Softmax, cross-entropy and what "loss" means</h2></div><label class="learned"><input type="checkbox" data-learn="loss"> Got it</label></div>
+<div class="prose">
+<p>The network's last layer produces raw scores called <strong>logits</strong>. <strong>Softmax</strong> turns them into probabilities that sum to one, and <strong>cross-entropy</strong> measures how much probability went to the right answer:</p>
+<div class="math">softmax(z)ᵢ = e^(zᵢ/T) / Σⱼ e^(zⱼ/T)
+loss = −log( p_correct )</div>
+<p><code>T</code> is a temperature. Low T sharpens the distribution toward the biggest logit; high T flattens it. The same knob appears again when sampling from language models. Cross-entropy is small when the model is confident and right, and grows without bound when it is confident and wrong.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Play with logits</h3></div><p class="how">Move the four logit sliders and the temperature. The loss is computed for the class you mark as correct.</p>
+<div class="ctl"><label>Logit A <b id="smAV">2.0</b><input id="smA" type="range" min="-4" max="4" step="0.1" value="2"></label><label>Logit B <b id="smBV">1.0</b><input id="smB" type="range" min="-4" max="4" step="0.1" value="1"></label><label>Logit C <b id="smCV">0.0</b><input id="smC" type="range" min="-4" max="4" step="0.1" value="0"></label><label>Logit D <b id="smDV">-1.0</b><input id="smD" type="range" min="-4" max="4" step="0.1" value="-1"></label></div>
+<div class="ctl"><label>Temperature T <b id="smTV">1.0</b><input id="smT" type="range" min="0.1" max="3" step="0.05" value="1"></label><label>Correct class<select id="smY"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select></label></div>
+<div class="bars" id="smBars"></div>
+<div class="read"><div><small>Cross-entropy loss</small><span id="smL">-</span></div><div><small>Entropy of prediction</small><span id="smE">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · a numerically stable softmax</span><button type="button">Copy</button></div><pre>import numpy as np
+
+def softmax(z, T=1.0):
+    z = np.asarray(z) / T
+    z = z - z.max()                 # subtract the max so exp() cannot overflow
+    e = np.exp(z)
+    return e / e.sum()
+
+def cross_entropy(logits, target):
+    # log-softmax computed directly is safer than log(softmax(...))
+    z = logits - logits.max()
+    logp = z - np.log(np.exp(z).sum())
+    return -logp[target]
+
+print(softmax([2, 1, 0, -1]), cross_entropy(np.array([2., 1., 0., -1.]), 0))</pre></div>
+<div class="tips trap"><h4>Common traps</h4>
+<ul><li>In PyTorch, <code>nn.CrossEntropyLoss</code> expects raw logits. Applying softmax yourself first is a classic bug that silently hurts training.</li><li>For regression use MSE or Huber loss. For binary classification use <code>BCEWithLogitsLoss</code>, which is more stable than sigmoid followed by BCE.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="backprop"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Backpropagation, step by step</h2></div><label class="learned"><input type="checkbox" data-learn="backprop"> Got it</label></div>
+<div class="prose">
+<p>Training needs the gradient of the loss with respect to every weight. Backpropagation computes all of them in one backward sweep using the <strong>chain rule</strong>: the gradient at a node is the gradient arriving from above times the node's local derivative.</p>
+<div class="math">z = w₁x₁ + w₂x₂ + b      a = σ(z)      L = (a − y)²
+
+∂L/∂a  = 2(a − y)
+∂a/∂z  = a(1 − a)
+∂L/∂z  = ∂L/∂a · ∂a/∂z
+∂L/∂w₁ = ∂L/∂z · x₁      ∂L/∂b = ∂L/∂z</div>
+<p>Frameworks such as PyTorch record these operations as they run (autograd), so <code>loss.backward()</code> does the sweep for you. Doing one by hand is the best way to understand it.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>A tiny network with live gradients</h3></div><p class="how">Change any input, weight or the target. Forward values and backward gradients update together, and the last line checks the gradient against a numerical estimate.</p>
+<div class="ctl"><label>x₁ <b id="bpX1V">1.0</b><input id="bpX1" type="range" min="-2" max="2" step="0.1" value="1"></label><label>x₂ <b id="bpX2V">-0.5</b><input id="bpX2" type="range" min="-2" max="2" step="0.1" value="-0.5"></label><label>w₁ <b id="bpW1V">0.8</b><input id="bpW1" type="range" min="-2" max="2" step="0.1" value="0.8"></label><label>w₂ <b id="bpW2V">-0.4</b><input id="bpW2" type="range" min="-2" max="2" step="0.1" value="-0.4"></label><label>b <b id="bpBV">0.1</b><input id="bpB" type="range" min="-2" max="2" step="0.1" value="0.1"></label><label>Target y <b id="bpYV">1</b><input id="bpY" type="range" min="0" max="1" step="1" value="1"></label></div>
+<div class="tw"><table><thead><tr><th>Node</th><th>Forward value</th><th>Backward: ∂L / node</th></tr></thead><tbody id="bpTbl"></tbody></table></div>
+<p class="note" id="bpChk"></p>
+<div class="btns"><button class="btn primary" id="bpStep" type="button">Take one gradient step (lr 0.5)</button></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · the same thing with autograd</span><button type="button">Copy</button></div><pre>import torch
+
+x1, x2 = torch.tensor(1.0), torch.tensor(-0.5)
+w1 = torch.tensor(0.8, requires_grad=True)
+w2 = torch.tensor(-0.4, requires_grad=True)
+b  = torch.tensor(0.1, requires_grad=True)
+y  = torch.tensor(1.0)
+
+a = torch.sigmoid(w1 * x1 + w2 * x2 + b)
+loss = (a - y) ** 2
+loss.backward()
+print(w1.grad.item(), w2.grad.item(), b.grad.item())   # matches the table above</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Cost of backward is roughly twice the forward pass, and it needs the forward activations kept in memory. That memory is why training uses far more GPU memory than inference.</li><li>When a custom layer misbehaves, compare its gradient with <code>torch.autograd.gradcheck</code>, the numerical check shown in the demo.</li><li>Gradients are accumulated by default in PyTorch. Call <code>optimizer.zero_grad()</code> every step.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="playground"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>Train a network in your browser</h2></div><label class="learned"><input type="checkbox" data-learn="playground"> Got it</label></div>
+<div class="prose">
+<p>This is a real multi-layer perceptron trained with minibatch gradient descent and the Adam optimiser, in plain JavaScript. A single neuron draws a straight line, hidden layers bend it, and more bending means more capacity.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Neural network playground</h3></div><p class="how">Pick a dataset, set the hidden layers and press Train. Try circles with 0 hidden layers (it cannot work), then add neurons. The spiral needs more capacity and patience.</p>
+<div class="stage"><canvas id="pgCv" style="aspect-ratio:1;max-width:520px;width:100%" aria-label="Decision boundary of the network"></canvas>
+<div style="display:flex;flex-direction:column;gap:12px;min-width:0"><canvas id="pgLoss" style="aspect-ratio:16/9" aria-label="Training loss"></canvas>
+<div class="read"><div><small>Epoch</small><span id="pgE">0</span></div><div><small>Loss</small><span id="pgL">-</span></div><div><small>Accuracy</small><span id="pgA">-</span></div></div></div></div>
+<div class="ctl"><label>Dataset<select id="pgD"><option value="moons">Moons</option><option value="rings">Circles</option><option value="xor">XOR</option><option value="blobs">Two blobs</option><option value="spiral">Spiral</option></select></label>
+<label>Hidden layer 1 neurons <b id="pgH1V">6</b><input id="pgH1" type="range" min="0" max="12" step="1" value="6"></label>
+<label>Hidden layer 2 neurons <b id="pgH2V">4</b><input id="pgH2" type="range" min="0" max="10" step="1" value="4"></label>
+<label>Activation<select id="pgAct"><option value="tanh">tanh</option><option value="relu">ReLU</option></select></label></div>
+<div class="ctl"><label>Learning rate <b id="pgLrV">0.03</b><input id="pgLr" type="range" min="0.003" max="0.2" step="0.001" value="0.03"></label><label>Noise <b id="pgNV">0.06</b><input id="pgN" type="range" min="0" max="0.2" step="0.01" value="0.06"></label>
+<div class="btns"><button class="btn primary" id="pgRun" type="button">Train</button><button class="btn" id="pgReset" type="button">Reset weights</button></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · the same model in PyTorch</span><button type="button">Copy</button></div><pre>import torch, torch.nn as nn
+from sklearn.datasets import make_moons
+
+X, y = make_moons(400, noise=0.15, random_state=0)
+X = torch.tensor(X, dtype=torch.float32)
+y = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
+
+model = nn.Sequential(nn.Linear(2, 6), nn.Tanh(), nn.Linear(6, 4), nn.Tanh(), nn.Linear(4, 1))
+opt = torch.optim.Adam(model.parameters(), lr=0.03)
+loss_fn = nn.BCEWithLogitsLoss()
+
+for epoch in range(300):
+    for i in torch.randperm(len(X)).split(32):      # minibatches
+        opt.zero_grad()
+        loss = loss_fn(model(X[i]), y[i])
+        loss.backward()
+        opt.step()
+acc = ((model(X) &gt; 0).float() == y).float().mean()
+print(float(acc))</pre></div>
+</section>
+
+<section class="sec" id="optim"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>Optimisers on a 3D loss landscape</h2></div><label class="learned"><input type="checkbox" data-learn="optim"> Got it</label></div>
+<div class="prose">
+<p>The loss is a surface over the weights, and an optimiser decides how to walk downhill. Plain <strong>SGD</strong> follows the local slope. <strong>Momentum</strong> keeps a running velocity, which smooths zigzags in narrow valleys. <strong>RMSProp</strong> and <strong>Adam</strong> scale each step per parameter by recent gradient size.</p>
+<div class="math">SGD:       w ← w − lr · g
+Momentum:  v ← β·v + g          w ← w − lr · v
+RMSProp:   s ← ρ·s + (1−ρ)·g²    w ← w − lr · g / (√s + ε)
+Adam:      m ← β₁m + (1−β₁)g     s ← β₂s + (1−β₂)g²
+           w ← w − lr · m̂ / (√ŝ + ε)       (m̂, ŝ bias-corrected)</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Race four optimisers in 3D</h3></div><p class="how">The surface is an elongated bowl with small ripples. Drag to rotate. All four start at the same point. SGD crawls along the shallow direction, momentum overshoots and then recovers, and adaptive methods take steadier steps.</p>
+<canvas id="opCv" style="aspect-ratio:16/10" aria-label="3D loss surface with four optimiser paths"></canvas>
+<div class="legend"><span><i style="background:var(--c1)"></i>SGD</span><span><i style="background:var(--c2)"></i>Momentum</span><span><i style="background:var(--c3)"></i>RMSProp</span><span><i style="background:var(--c4)"></i>Adam</span></div>
+<div class="ctl"><label>Learning rate <b id="opLrV">0.10</b><input id="opLr" type="range" min="0.01" max="0.5" step="0.01" value="0.1"></label>
+<div class="btns"><button class="btn primary" id="opRun" type="button">Pause</button><button class="btn" id="opRestart" type="button">Restart</button><button class="btn" id="opRand" type="button">Random start</button></div></div>
+<div class="read"><div><small>SGD loss</small><span id="opL0">-</span></div><div><small>Momentum loss</small><span id="opL1">-</span></div><div><small>RMSProp loss</small><span id="opL2">-</span></div><div><small>Adam loss</small><span id="opL3">-</span></div></div>
+<p class="hint3">Drag the surface to orbit it.</p>
+</div>
+<div class="code"><div class="code-h"><span>Python · the update rules written by hand</span><button type="button">Copy</button></div><pre>import numpy as np
+
+def adam(grad_fn, w, lr=0.1, b1=0.9, b2=0.999, eps=1e-8, steps=200):
+    m = np.zeros_like(w); s = np.zeros_like(w)
+    for t in range(1, steps + 1):
+        g = grad_fn(w)
+        m = b1 * m + (1 - b1) * g
+        s = b2 * s + (1 - b2) * g * g
+        m_hat = m / (1 - b1 ** t)          # bias correction for the early steps
+        s_hat = s / (1 - b2 ** t)
+        w = w - lr * m_hat / (np.sqrt(s_hat) + eps)
+    return w
+
+print(adam(lambda w: np.array([0.5 * w[0], 3 * w[1]]), np.array([-2.0, 1.2])))</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Adam (or AdamW) with lr around 1e-3 is the standard first choice. SGD with momentum often generalises slightly better for vision models when tuned well.</li><li>Learning rate matters more than the choice of optimiser. Sweep it on a log scale (1e-4, 3e-4, 1e-3, 3e-3).</li><li>Use <strong>AdamW</strong>, which applies weight decay separately, instead of Adam with an L2 term.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="init"><div class="sec-head"><div><div class="kick">Concept 06</div><h2>Initialisation and signal flow</h2></div><label class="learned"><input type="checkbox" data-learn="init"> Got it</label></div>
+<div class="prose">
+<p>If weights start too small, the signal shrinks layer by layer until it vanishes. If they start too large, it explodes. Good initialisation keeps the variance of activations roughly constant with depth:</p>
+<div class="math">Xavier / Glorot (tanh, sigmoid):  Var(w) = 1 / n_in
+He / Kaiming (ReLU):              Var(w) = 2 / n_in</div>
+<p>The factor of two for ReLU compensates for it zeroing half of its inputs.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Watch the signal through 30 layers</h3></div><p class="how">A random 128-wide network is fed random data. The chart shows the standard deviation of the activations at every layer on a log scale. A flat line is healthy.</p>
+<canvas id="inCv" style="aspect-ratio:21/9" aria-label="Activation standard deviation by layer"></canvas>
+<div class="legend"><span><i style="background:var(--c1)"></i>too small (std 0.02)</span><span><i style="background:var(--c3)"></i>Xavier</span><span><i style="background:var(--c2)"></i>He</span><span><i style="background:var(--c4)"></i>too large (std 0.2)</span></div>
+<div class="ctl"><label>Activation<select id="inAct"><option value="relu">ReLU</option><option value="tanh">tanh</option></select></label><div class="btns"><button class="btn" id="inNew" type="button">New random weights</button></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · initialisation in PyTorch</span><button type="button">Copy</button></div><pre>import torch.nn as nn
+
+layer = nn.Linear(512, 512)
+nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")   # He init
+nn.init.zeros_(layer.bias)
+
+def init_weights(m):
+    if isinstance(m, nn.Linear):
+        nn.init.xavier_uniform_(m.weight)                     # Xavier for tanh or linear
+        nn.init.zeros_(m.bias)
+model.apply(init_weights)</pre></div>
+</section>
+
+<section class="sec" id="reg"><div class="sec-head"><div><div class="kick">Concept 07</div><h2>Regularisation and the learning rate schedule</h2></div><label class="learned"><input type="checkbox" data-learn="reg"> Got it</label></div>
+<div class="prose">
+<p><strong>Dropout</strong> randomly switches off a fraction <code>p</code> of neurons on every training step and rescales the rest by <code>1/(1−p)</code>, so the network cannot lean on any single unit. At inference every neuron is used. Other regularisers include weight decay, data augmentation and early stopping.</p>
+<p>The <strong>learning-rate schedule</strong> changes the step size during training. Warmup avoids early instability, and decaying toward zero lets training settle into a minimum.</p>
+</div>
+<div class="cols2">
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Dropout</h3></div><p class="how">The mask is resampled continuously. Faded neurons are dropped for this step.</p>
+<canvas id="drCv" style="aspect-ratio:4/3" aria-label="Dropout mask on a small network"></canvas>
+<div class="ctl"><label>Dropout p <b id="drPV">0.40</b><input id="drP" type="range" min="0" max="0.9" step="0.05" value="0.4"></label></div>
+<div class="read"><div><small>Active</small><span id="drA">-</span></div><div><small>Rescale</small><span id="drS">-</span></div></div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Learning-rate schedules</h3></div><p class="how">Pick a schedule and scrub through training.</p>
+<canvas id="lrCv" style="aspect-ratio:4/3" aria-label="Learning rate against step"></canvas>
+<div class="ctl"><label>Schedule<select id="lrSel"><option value="const">Constant</option><option value="step">Step decay</option><option value="cos">Cosine</option><option value="warm">Warmup + cosine</option><option value="lin">Warmup + linear decay</option></select></label><label>Step <b id="lrTV">500</b><input id="lrT" type="range" min="0" max="1000" step="10" value="500"></label></div>
+<div class="read"><div><small>Learning rate</small><span id="lrV">-</span></div></div>
+</div>
+</div>
+<div class="code"><div class="code-h"><span>Python · dropout, weight decay, schedule and early stopping</span><button type="button">Copy</button></div><pre>import torch, torch.nn as nn
+
+model = nn.Sequential(nn.Linear(20, 64), nn.ReLU(), nn.Dropout(0.3),
+                      nn.Linear(64, 64), nn.ReLU(), nn.Dropout(0.3), nn.Linear(64, 2))
+opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=1e-2)
+sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=3e-3, total_steps=1000)
+
+best, patience = 1e9, 0
+for step in range(1000):
+    model.train()                      # dropout active
+    ...                                # forward, loss.backward(), opt.step()
+    sched.step()
+    model.eval()                       # dropout off for validation
+    val = validate(model)              # your validation function
+    if val &lt; best: best, patience = val, 0
+    else:
+        patience += 1
+        if patience &gt;= 20: break       # early stopping</pre></div>
+</section>
+
+<section class="sec" id="mini"><div class="sec-head"><div><div class="kick">Concept 08</div><h2>Small but important concepts</h2></div><label class="learned"><input type="checkbox" data-learn="mini"> Got it</label></div>
+<div class="prose"><p>The details that separate a network that trains from one that quietly fails.</p></div>
+<div class="mini-grid"><div class="mini"><h4>Batch normalisation</h4><p>Normalise each feature over the batch, then rescale with learned γ and β. Speeds up and stabilises training of CNNs.</p><div class="math">x̂ = (x − μ_B) / √(σ²_B + ε);  y = γ·x̂ + β</div><code class="i">nn.BatchNorm2d(64)</code></div><div class="mini"><h4>Layer normalisation</h4><p>Normalise across the features of each example. Independent of batch size, so it is standard in transformers.</p><div class="math">x̂ = (x − μ) / √(σ² + ε) over features</div><code class="i">nn.LayerNorm(512)</code></div><div class="mini"><h4>Residual connection</h4><p>Add the input to the layer's output so gradients have a direct path. This is what makes very deep networks trainable.</p><div class="math">y = x + F(x)</div><code class="i">out = x + block(x)</code></div><div class="mini"><h4>Gradient clipping</h4><p>Rescale gradients whose norm is too large. Standard for RNNs and transformers.</p><div class="math">g ← g · min(1, c / ‖g‖)</div><code class="i">clip_grad_norm_(model.parameters(), 1.0)</code></div><div class="mini"><h4>Label smoothing</h4><p>Train toward 0.9 instead of 1.0 for the correct class. Reduces over-confidence.</p><div class="math">y_smooth = (1 − ε)·y + ε / K</div><code class="i">CrossEntropyLoss(label_smoothing=0.1)</code></div><div class="mini"><h4>Mixed precision</h4><p>Run most maths in 16-bit floats for speed and memory, keeping a 32-bit master copy of the weights.</p><div class="math">loss scaling avoids underflow</div><code class="i">with torch.autocast("cuda", dtype=torch.bfloat16):</code></div><div class="mini"><h4>Batch size and epochs</h4><p>One epoch is a pass over all data. Larger batches give smoother gradients but fewer updates per epoch.</p><div class="math">steps per epoch = N / batch_size</div><code class="i">DataLoader(ds, batch_size=64, shuffle=True)</code></div><div class="mini"><h4>Weight decay</h4><p>Shrinks weights a little every step, which discourages large weights. Use AdamW so the decay is decoupled.</p><div class="math">w ← w − lr·(g + λ·w)</div><code class="i">AdamW(params, weight_decay=0.01)</code></div><div class="mini"><h4>Early stopping</h4><p>Stop when validation loss stops improving, and keep the best checkpoint.</p><div class="math">stop if no gain for k epochs</div><code class="i">best_state = copy.deepcopy(model.state_dict())</code></div><div class="mini"><h4>Vanishing and exploding gradients</h4><p>Products of many small (or large) derivatives shrink (or blow up) toward the early layers. Fixes: ReLU, good init, normalisation, residuals, clipping.</p><div class="math">∂L/∂w₁ = Π (layer derivatives)</div><code class="i">print(p.grad.norm()) for p in model.parameters()</code></div><div class="mini"><h4>Log-sum-exp trick</h4><p>Compute log(Σ e^z) stably by pulling out the maximum. Frameworks do this inside cross-entropy.</p><div class="math">log Σ e^zᵢ = m + log Σ e^(zᵢ−m)</div><code class="i">torch.logsumexp(z, dim=-1)</code></div><div class="mini"><h4>Transfer learning</h4><p>Start from a pretrained network and fine-tune, often with a smaller learning rate on the pretrained layers.</p><div class="math">w_new = w_pretrained − small updates</div><code class="i">for p in backbone.parameters(): p.requires_grad = False</code></div><div class="mini"><h4>Data augmentation</h4><p>Create label-preserving variants of training examples. Cheap regularisation.</p><div class="math">x' = T(x), label unchanged</div><code class="i">transforms.RandomResizedCrop(224)</code></div><div class="mini"><h4>Universal approximation</h4><p>A wide enough network with one hidden layer can approximate any continuous function on a compact set. It says nothing about how easy it is to learn.</p><div class="math">f ≈ Σ vᵢ · σ(wᵢ·x + bᵢ)</div><code class="i">nn.Sequential(nn.Linear(d, 1024), nn.ReLU(), nn.Linear(1024, 1))</code></div></div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="nn"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="nn.js"></script>
+</body></html>

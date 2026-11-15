@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Vision & sequences · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">03 · Vision and sequences</p>
+<h1>Convolutions, recurrence and <em>state spaces</em></h1>
+<p class="lead">Different data needs different structure. Images have local patterns, so we slide small filters over them. Sequences have order, so we carry a memory forward. State space models do this memory-keeping with clean linear maths and have become a serious alternative to attention.</p>
+<div class="chips"><span class="chip">convolution</span><span class="chip">pooling</span><span class="chip">RNN · LSTM</span><span class="chip">state space models</span><span class="chip">Mamba</span></div>
+</div><canvas id="heroCv" data-art="conv" aria-label="Animated convolution window sliding over a pixel grid"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="conv"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>Convolution: sliding a small filter</h2></div><label class="learned"><input type="checkbox" data-learn="conv"> Got it</label></div>
+<div class="prose">
+<p>A convolutional layer slides a small grid of weights, the <strong>kernel</strong>, across the image. At each position it multiplies the overlapping pixels by the kernel and adds them up. Because the same kernel is reused everywhere, the layer has few parameters and detects a pattern wherever it appears (<em>translation equivariance</em>).</p>
+<div class="math">out[i, j] = Σₐ Σ_b  kernel[a, b] · image[i + a, j + b]  (+ bias)</div>
+<p>Early layers learn edges and blobs. Later layers combine them into textures, parts and objects. <strong>Pooling</strong> shrinks the map by keeping the maximum (or average) of each small window, which adds tolerance to small shifts.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Paint an image and convolve it</h3></div><p class="how">Click or drag on the left grid to paint pixels. Choose a kernel and hover over the middle grid to see which 3×3 patch produced each output value. The right grid is 2×2 max pooling.</p>
+<div class="stage3" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+<div><div class="note" style="margin-bottom:6px">Input 10×10</div><canvas id="cvIn" style="aspect-ratio:1" aria-label="Paintable input image"></canvas></div>
+<div><div class="note" style="margin-bottom:6px">Feature map 8×8</div><canvas id="cvOut" style="aspect-ratio:1" aria-label="Convolution output"></canvas></div>
+<div><div class="note" style="margin-bottom:6px">After max pooling 4×4</div><canvas id="cvPool" style="aspect-ratio:1" aria-label="Pooled output"></canvas></div></div>
+<div class="ctl"><label>Kernel<select id="cvK"><option value="vert">Vertical edges (Sobel)</option><option value="horiz">Horizontal edges (Sobel)</option><option value="blur">Blur (box)</option><option value="sharp">Sharpen</option><option value="ident">Identity</option></select></label>
+<label>Preset image<select id="cvP"><option value="seven">Digit 7</option><option value="plus">Plus</option><option value="box">Box</option><option value="blank">Blank</option></select></label>
+<div class="btns"><button class="btn" id="cvRelu" type="button" aria-pressed="true">ReLU on</button></div></div>
+<div class="math" id="cvKTxt" style="max-width:320px"></div>
+<p class="note" id="cvCalc">Hover over the feature map.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>A CNN as a stack of shrinking volumes (3D)</h3></div><p class="how">Drag to rotate. Each slab is a layer: its face is the spatial size and its thickness is the number of channels. The red patch shows one kernel position and where its result lands.</p>
+<canvas id="cnn3d" style="aspect-ratio:21/9" aria-label="3D diagram of a convolutional network"></canvas>
+<p class="hint3">Drag to orbit.</p>
+</div>
+<div class="code"><div class="code-h"><span>Python · a small CNN in PyTorch</span><button type="button">Copy</button></div><pre>import torch, torch.nn as nn
+
+class SmallCNN(nn.Module):
+    def __init__(self, n_classes=10):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 8, kernel_size=5), nn.ReLU(), nn.MaxPool2d(2),     # 28 -&gt; 24 -&gt; 12
+            nn.Conv2d(8, 16, kernel_size=5), nn.ReLU(), nn.MaxPool2d(2),    # 12 -&gt; 8 -&gt; 4
+        )
+        self.head = nn.Linear(16 * 4 * 4, n_classes)
+
+    def forward(self, x):
+        x = self.features(x)
+        return self.head(x.flatten(1))
+
+print(SmallCNN()(torch.randn(2, 1, 28, 28)).shape)      # torch.Size([2, 10])</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Real kernels are learned, not designed. The Sobel and blur kernels above are just hand-made examples of what a learned filter can become.</li><li>Use <code>padding</code> (for example <code>padding=1</code> with a 3×3 kernel) to keep the spatial size and avoid shrinking too fast.</li><li>For small datasets, start from a pretrained backbone (ResNet, EfficientNet, ConvNeXt) and fine-tune.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="shape"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Shapes, strides and parameter counts</h2></div><label class="learned"><input type="checkbox" data-learn="shape"> Got it</label></div>
+<div class="prose">
+<p>Most CNN bugs are shape bugs. The output size of a convolution along one dimension is</p>
+<div class="math">out = floor( (W + 2P − K) / S ) + 1
+params = K · K · C_in · C_out + C_out
+MACs   ≈ out² · K² · C_in · C_out</div>
+<p>where <code>W</code> is input size, <code>K</code> kernel size, <code>S</code> stride and <code>P</code> padding. Doubling channels roughly quadruples the cost of the layer.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Convolution calculator</h3></div><p class="how">Type your layer settings to get the output size and cost.</p>
+<div class="ctl"><label>Input size W<input id="shW" type="number" min="1" max="2048" value="224"></label><label>Kernel K<input id="shK" type="number" min="1" max="15" value="3"></label><label>Stride S<input id="shS" type="number" min="1" max="8" value="1"></label><label>Padding P<input id="shP" type="number" min="0" max="8" value="1"></label><label>Channels in<input id="shCi" type="number" min="1" max="2048" value="64"></label><label>Channels out<input id="shCo" type="number" min="1" max="2048" value="128"></label></div>
+<div class="read"><div><small>Output size</small><span id="shO">-</span></div><div><small>Parameters</small><span id="shPa">-</span></div><div><small>Multiply-adds</small><span id="shM">-</span></div></div>
+</div>
+<div class="tw"><table><thead><tr><th>Year</th><th>Network</th><th>Idea that mattered</th></tr></thead><tbody>
+<tr><td>1998</td><td>LeNet-5</td><td>Convolution, pooling and backprop trained end to end on digits</td></tr>
+<tr><td>2012</td><td>AlexNet</td><td>Deep CNN on GPUs with ReLU and dropout won ImageNet by a wide margin</td></tr>
+<tr><td>2014</td><td>VGG, GoogLeNet</td><td>Stacks of 3×3 filters (VGG) and parallel multi-scale branches (Inception)</td></tr>
+<tr><td>2015</td><td>ResNet</td><td>Skip connections made very deep networks trainable</td></tr>
+<tr><td>2019</td><td>EfficientNet</td><td>Scale depth, width and resolution together</td></tr>
+<tr><td>2020</td><td>Vision Transformer (ViT)</td><td>Cut the image into patches and use a transformer</td></tr>
+<tr><td>2022</td><td>ConvNeXt</td><td>A CNN modernised with transformer-era design choices</td></tr>
+</tbody></table></div>
+</section>
+
+<section class="sec" id="rnn"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Recurrent networks and the vanishing gradient</h2></div><label class="learned"><input type="checkbox" data-learn="rnn"> Got it</label></div>
+<div class="prose">
+<p>A recurrent network reads a sequence one step at a time and carries a hidden state <code>h</code> that summarises what it has seen:</p>
+<div class="math">hₜ = tanh( W·hₜ₋₁ + U·xₜ + b )
+yₜ = V·hₜ</div>
+<p>To train it we unroll it through time and backpropagate (BPTT). The gradient reaching a step far in the past is a product of many factors, one per step. If each factor is a little below one, the product vanishes. If it is a little above one, it explodes.</p>
+<p><strong>LSTM</strong> and <strong>GRU</strong> add gates so the cell state can pass information forward almost unchanged:</p>
+<div class="math">fₜ = σ(W_f·[hₜ₋₁, xₜ] + b_f)       forget gate
+iₜ = σ(W_i·[hₜ₋₁, xₜ] + b_i)       input gate
+c̃ₜ = tanh(W_c·[hₜ₋₁, xₜ] + b_c)    candidate
+cₜ = fₜ ⊙ cₜ₋₁ + iₜ ⊙ c̃ₜ           cell state
+oₜ = σ(W_o·[hₜ₋₁, xₜ] + b_o)       output gate
+hₜ = oₜ ⊙ tanh(cₜ)</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Gradient flowing back through time</h3></div><p class="how">Each step multiplies the gradient by a factor r. Move r and watch the gradient from step 50 fade or blow up. The LSTM line shows the cell path, where the factor is the forget gate.</p>
+<canvas id="vgCv" style="aspect-ratio:21/9" aria-label="Gradient magnitude against time steps back"></canvas>
+<div class="legend"><span><i style="background:var(--c1)"></i>plain RNN factor r</span><span><i style="background:var(--c2)"></i>LSTM cell path (forget gate)</span></div>
+<div class="ctl"><label>RNN factor r <b id="vgRV">0.90</b><input id="vgR" type="range" min="0.5" max="1.3" step="0.01" value="0.9"></label><label>Forget gate f <b id="vgFV">0.98</b><input id="vgF" type="range" min="0.8" max="1" step="0.005" value="0.98"></label></div>
+<div class="read"><div><small>Plain RNN after 50 steps</small><span id="vgA">-</span></div><div><small>LSTM cell after 50 steps</small><span id="vgB">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · an LSTM with gradient clipping</span><button type="button">Copy</button></div><pre>import torch, torch.nn as nn
+
+class SeqModel(nn.Module):
+    def __init__(self, vocab, d=128):
+        super().__init__()
+        self.emb = nn.Embedding(vocab, d)
+        self.rnn = nn.LSTM(d, d, batch_first=True)
+        self.out = nn.Linear(d, vocab)
+    def forward(self, tokens):
+        h, _ = self.rnn(self.emb(tokens))
+        return self.out(h)                       # logits for the next token at every step
+
+model = SeqModel(vocab=1000)
+opt = torch.optim.Adam(model.parameters(), 1e-3)
+x = torch.randint(0, 1000, (8, 30))
+loss = nn.functional.cross_entropy(model(x[:, :-1]).transpose(1, 2), x[:, 1:])
+loss.backward()
+torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)   # tames exploding gradients
+opt.step()</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Gradient clipping fixes exploding gradients. Gates (LSTM, GRU) fix vanishing ones.</li><li>Initialise the LSTM forget-gate bias to about 1 so it starts by remembering.</li><li>RNNs process steps one after another, so they train slowly on modern hardware. This is the main reason transformers displaced them.</li></ul>
+</div>
+<div class="tips"><h4>Industry now</h4><ul><li>LSTMs and GRUs are still used for small, low-latency or streaming models, but most sequence work in industry uses <strong>transformers</strong>. State space models such as Mamba are a growing alternative for very long sequences.</li><li>The vanishing-gradient idea still matters: residual connections and normalisation solve the same problem in transformers.</li></ul></div>
+</section>
+
+<section class="sec" id="ssm"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>State space models: Mamba and friends</h2></div><label class="learned"><input type="checkbox" data-learn="ssm"> Got it</label></div>
+<div class="prose">
+<p>A <strong>state space model</strong> (SSM) comes from control theory. A hidden state vector <code>h</code> evolves under a linear rule driven by the input, and the output reads from the state:</p>
+<div class="math">continuous:  h'(t) = A·h(t) + B·x(t)        y(t) = C·h(t) + D·x(t)
+discretised: hₜ = Ā·hₜ₋₁ + B̄·xₜ             yₜ = C·hₜ
+             Ā = exp(Δ·A)      B̄ = (Δ·A)⁻¹ (exp(Δ·A) − I) · Δ·B     (zero-order hold)</div>
+<p>Because the system is linear, the same model has two equivalent forms. As a <strong>recurrence</strong> it needs constant memory per step, which makes inference cheap. As a <strong>convolution</strong> with kernel <code>K = (CB̄, CĀB̄, CĀ²B̄, …)</code> it can be trained in parallel over the whole sequence. Cost grows linearly with length, where attention grows quadratically.</p>
+<p><strong>S4</strong> showed that a carefully structured <code>A</code> (HiPPO initialisation) lets an SSM remember very long ranges. <strong>Mamba</strong> then made the parameters <code>Δ</code>, <code>B</code>, <code>C</code> depend on the current input (a <em>selective</em> SSM). That lets the model choose what to store or forget, which fixed linear SSMs cannot do. The recurrence is then no longer a plain convolution, so Mamba uses a hardware-aware parallel scan instead.</p>
+<p>The key number is the eigenvalues of <code>Ā</code>. Eigenvalues close to 1 in magnitude mean long memory; smaller ones forget quickly; complex ones make the state rotate, which captures oscillations.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Watch a hidden state travel through 3D</h3></div><p class="how">A 3-dimensional state is pushed by the input. Decay ρ sets how long it remembers, and the angle ω sets how fast it rotates. Drag the 3D view to orbit. The lower plot is the output y over time.</p>
+<div class="stage even"><canvas id="ssm3d" style="aspect-ratio:4/3" aria-label="3D state trajectory"></canvas><canvas id="ssmY" style="aspect-ratio:4/3" aria-label="Output and input over time"></canvas></div>
+<div class="legend"><span><i style="background:var(--c2)"></i>state trajectory (newest is brightest)</span><span><i style="background:var(--c1)"></i>output y</span><span><i style="background:var(--c4)"></i>input x</span></div>
+<div class="ctl"><label>Decay ρ <b id="ssRV">0.95</b><input id="ssR" type="range" min="0.7" max="0.995" step="0.005" value="0.95"></label><label>Rotation ω (rad/step) <b id="ssWV">0.30</b><input id="ssW" type="range" min="0" max="0.8" step="0.01" value="0.3"></label>
+<label>Input<select id="ssI"><option value="imp">One impulse</option><option value="pulse">Pulse train</option><option value="step">Step</option><option value="noise">Random</option></select></label><div class="btns"><button class="btn" id="ssRe" type="button">Replay</button></div></div>
+<div class="read"><div><small>Memory half-life</small><span id="ssH">-</span></div><div><small>Kernel length for 1% left</small><span id="ssK">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · a diagonal SSM as recurrence and as convolution</span><button type="button">Copy</button></div><pre>import numpy as np
+
+n, T = 4, 64
+rng = np.random.default_rng(0)
+A = np.exp(-rng.uniform(0.02, 0.3, n)) * np.exp(1j * rng.uniform(0, 1, n))   # complex diagonal Abar
+B = rng.normal(size=n) + 0j
+C = rng.normal(size=n) + 0j
+x = rng.normal(size=T)
+
+# 1) recurrence: constant memory per step (good for inference)
+h = np.zeros(n, dtype=complex); y_rec = []
+for t in range(T):
+    h = A * h + B * x[t]
+    y_rec.append((C * h).sum().real)
+
+# 2) convolution: K[k] = C A^k B, then y = K * x (good for parallel training)
+K = np.array([(C * A**k * B).sum().real for k in range(T)])
+y_conv = np.array([np.dot(K[:t + 1][::-1], x[:t + 1]) for t in range(T)])
+print(np.allclose(y_rec, y_conv))      # True</pre></div>
+<div class="code"><div class="code-h"><span>Python · the idea behind Mamba&#x27;s selective scan (sequential reference)</span><button type="button">Copy</button></div><pre>import torch
+
+def selective_scan(x, delta, A, B, C):
+    # x: (T, d)   delta: (T, d)   A: (d, n)   B, C: (T, n)  -- B, C, delta depend on the input
+    T, d = x.shape
+    h = torch.zeros(d, A.shape[1])
+    ys = []
+    for t in range(T):
+        dA = torch.exp(delta[t].unsqueeze(-1) * A)                  # (d, n) discretised A
+        dB = delta[t].unsqueeze(-1) * B[t].unsqueeze(0)             # (d, n) discretised B
+        h = dA * h + dB * x[t].unsqueeze(-1)                        # selective state update
+        ys.append((h * C[t].unsqueeze(0)).sum(-1))                  # read out
+    return torch.stack(ys)          # real implementations replace this loop with a parallel scan</pre></div>
+<div class="tips trap"><h4>Common traps</h4>
+<ul><li>Pure SSMs can struggle with exact recall (copy this exact string from far back), where attention is strong. That is why many recent models are hybrids with a few attention layers.</li><li>Stability needs the eigenvalues of Ā inside the unit circle. Parameterising A as a negative real part before discretising keeps it stable.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="mini"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>Small but important concepts</h2></div><label class="learned"><input type="checkbox" data-learn="mini"> Got it</label></div>
+<div class="prose"><p>Details that keep coming up in vision and sequence work.</p></div>
+<div class="mini-grid"><div class="mini"><h4>Receptive field</h4><p>The region of the input that influences one unit. Stacking 3×3 layers grows it by 2 each layer.</p><div class="math">RF_l = RF_{l−1} + (K−1)·jump</div><code class="i">torchinfo.summary(model, (1,3,224,224))</code></div><div class="mini"><h4>1×1 convolution</h4><p>Mixes channels at each pixel without looking at neighbours. Cheap way to change channel count.</p><div class="math">out = W · channels at (i, j)</div><code class="i">nn.Conv2d(256, 64, kernel_size=1)</code></div><div class="mini"><h4>Depthwise separable convolution</h4><p>A per-channel spatial filter followed by a 1×1 mix. Far fewer parameters, used in MobileNet.</p><div class="math">params ≈ K²·C + C·C_out</div><code class="i">nn.Conv2d(C, C, 3, groups=C)</code></div><div class="mini"><h4>Global average pooling</h4><p>Average each channel over all positions instead of flattening. Removes a big dense layer.</p><div class="math">y_c = mean over (i, j) of feature_c</div><code class="i">nn.AdaptiveAvgPool2d(1)</code></div><div class="mini"><h4>Dilated convolution</h4><p>Spaces the kernel taps apart to see a wider area with the same parameter count.</p><div class="math">effective K = K + (K−1)(d−1)</div><code class="i">nn.Conv2d(C, C, 3, dilation=2)</code></div><div class="mini"><h4>Intersection over union</h4><p>Overlap measure between two boxes. Used to score detections and to suppress duplicates.</p><div class="math">IoU = area(A ∩ B) / area(A ∪ B)</div><code class="i">torchvision.ops.box_iou(a, b)</code></div><div class="mini"><h4>Non-maximum suppression</h4><p>Keep the highest-scoring box and drop others that overlap it too much.</p><div class="math">drop box if IoU &gt; threshold</div><code class="i">torchvision.ops.nms(boxes, scores, 0.5)</code></div><div class="mini"><h4>Teacher forcing</h4><p>During training feed the true previous token, not the model's own guess. Fast, but creates a train/test mismatch.</p><div class="math">input_t = y_true_{t−1}</div><code class="i">logits = model(tokens[:, :-1])</code></div><div class="mini"><h4>Padding and masking</h4><p>Batch sequences by padding to equal length, then mask the padding so it affects neither attention nor loss.</p><div class="math">loss only where mask = 1</div><code class="i">CrossEntropyLoss(ignore_index=PAD)</code></div><div class="mini"><h4>Perplexity</h4><p>How surprised a language model is by held-out text. Lower is better.</p><div class="math">PPL = exp(cross-entropy)</div><code class="i">math.exp(loss.item())</code></div><div class="mini"><h4>Bidirectional RNN</h4><p>Run one RNN forward and one backward, then concatenate. Sees both past and future context.</p><div class="math">h = [h_fwd ; h_bwd]</div><code class="i">nn.LSTM(d, d, bidirectional=True)</code></div><div class="mini"><h4>Stride versus pooling</h4><p>A stride-2 convolution downsamples while learning its filter, so modern designs often use it instead of pooling.</p><div class="math">out = floor((W + 2P − K)/S) + 1</div><code class="i">nn.Conv2d(C, C, 3, stride=2, padding=1)</code></div><div class="mini"><h4>Zero-order hold</h4><p>The assumption that the input stays constant between samples, used to discretise a continuous SSM.</p><div class="math">Ā = exp(ΔA)</div><code class="i">scipy.signal.cont2discrete((A, B, C, D), dt)</code></div><div class="mini"><h4>HiPPO</h4><p>A way to initialise A so the state compresses the whole input history onto orthogonal polynomials. The base of S4.</p><div class="math">h tracks polynomial coefficients of history</div><code class="i">(see the S4 repository)</code></div></div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="deep"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="deep.js"></script>
+</body></html>

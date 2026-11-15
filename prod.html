@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Production & scaling · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">09 · Production and scaling</p>
+<h1>Running ML <em>at scale</em>: training, serving, monitoring</h1>
+<p class="lead">The part that decides whether a model survives contact with real users. Distributed training and sharding, pipeline parallelism, LLM serving with continuous batching and the KV cache, experiment tracking and tuning, drift monitoring, A/B testing and deployment.</p>
+<div class="chips"><span class="chip">DDP · FSDP · ZeRO</span><span class="chip">pipeline parallel</span><span class="chip">vLLM · batching</span><span class="chip">drift · PSI</span><span class="chip">A/B tests</span><span class="chip">ONNX · rollout</span></div>
+</div><canvas id="heroCv" data-art="grid" aria-label="Grid of compute cells lighting up"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="par"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>Distributed training: sharding the model state</h2></div><label class="learned"><input type="checkbox" data-learn="par"> Got it</label></div>
+<div class="prose">
+<p>With mixed-precision Adam, every parameter costs about <strong>16 bytes</strong> of training state: 2 for the weights, 2 for the gradients, and 12 for the fp32 master copy and two optimiser moments. A 7B model needs roughly 112 GB before any activations, more than one GPU holds.</p>
+<ul><li><strong>DDP</strong> (data parallel): every GPU keeps a full copy and sees different data. Gradients are averaged with an all-reduce.</li><li><strong>ZeRO / FSDP</strong>: shard the state across GPUs so each keeps only a slice, and gather it just in time. ZeRO-1 shards optimiser states, ZeRO-2 adds gradients, ZeRO-3 (FSDP) adds the weights.</li><li><strong>Tensor parallel</strong>: split each large matrix across GPUs. It needs fast links, so it is used inside one node.</li><li><strong>Pipeline parallel</strong>: put different layers on different GPUs (next section).</li></ul>
+<div class="math">per-GPU bytes:   DDP = 16P      ZeRO-1 = 4P + 12P/n      ZeRO-2 = 2P + 14P/n      ZeRO-3 = 16P/n</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Memory per GPU</h3></div><p class="how">Weights, gradients and optimiser state for each strategy, excluding activations. The dashed lines are 40 GB and 80 GB GPUs.</p>
+<div class="ctl"><label>Model size <b id="pmPV">7</b> B params<input id="pmP" type="range" min="1" max="140" step="1" value="7"></label><label>GPUs <b id="pmNV">8</b><input id="pmN" type="range" min="1" max="128" step="1" value="8"></label></div>
+<canvas id="prPar" style="aspect-ratio:21/9" aria-label="Memory per GPU for four strategies"></canvas>
+<div class="read"><div><small>DDP</small><span id="pm0">-</span></div><div><small>ZeRO-1</small><span id="pm1">-</span></div><div><small>ZeRO-2</small><span id="pm2">-</span></div><div><small>ZeRO-3 / FSDP</small><span id="pm3">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · DDP, FSDP and a DeepSpeed config</span><button type="button">Copy</button></div><pre># launch: torchrun --nproc_per_node=8 train.py
+import torch, torch.distributed as dist
+from torch.distributed.fsdp import fully_shard          # FSDP2 API in recent PyTorch
+
+dist.init_process_group("nccl")
+torch.cuda.set_device(dist.get_rank() % torch.cuda.device_count())
+model = build_model().cuda()
+
+# Option A: DDP (every GPU holds the whole model)
+# model = torch.nn.parallel.DistributedDataParallel(model)
+
+# Option B: FSDP (shard each transformer block's parameters, gradients and optimiser state)
+for block in model.layers:
+    fully_shard(block)
+fully_shard(model)
+
+sampler = torch.utils.data.distributed.DistributedSampler(dataset)   # each rank reads a different shard
+
+# DeepSpeed alternative (ds_config.json):
+# {"zero_optimization": {"stage": 3, "offload_optimizer": {"device": "cpu"}},
+#  "bf16": {"enabled": true}, "gradient_accumulation_steps": 8}</pre></div>
+<div class="tw"><table><thead><tr><th>Method</th><th>Splits</th><th>Communication</th><th>Use when</th></tr></thead><tbody>
+<tr><td>DDP</td><td>Data</td><td>One all-reduce of gradients per step</td><td>Model fits on one GPU</td></tr>
+<tr><td>FSDP / ZeRO-3</td><td>Data and all model state</td><td>All-gathers weights, reduce-scatters gradients (about 1.5× DDP traffic)</td><td>Model state does not fit on one GPU</td></tr>
+<tr><td>Tensor parallel</td><td>Each layer's matrices</td><td>All-reduce inside every layer</td><td>Large layers, fast NVLink inside a node</td></tr>
+<tr><td>Pipeline parallel</td><td>Layers into stages</td><td>Activations between stages</td><td>Many nodes, slower links between them</td></tr>
+<tr><td>Expert parallel</td><td>MoE experts</td><td>All-to-all token routing</td><td>Mixture-of-experts models</td></tr>
+</tbody></table></div>
+<div class="tips"><h4>Scaling notes</h4>
+<ul><li>Measure <strong>MFU</strong> (model FLOPs utilisation): useful FLOPs per second divided by peak. 35–55% is good on large LLM runs. Low MFU usually means data loading, small batches or slow communication.</li><li>Checkpoint often and make resuming exact (optimiser state, data position, random state). Large runs hit hardware failures.</li><li>Combine methods: for example FSDP across nodes and tensor parallel inside each node.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="pipe"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Pipeline parallelism and the bubble</h2></div><label class="learned"><input type="checkbox" data-learn="pipe"> Got it</label></div>
+<div class="prose">
+<p>In pipeline parallelism, stage s holds a block of layers. A batch is cut into <strong>micro-batches</strong> that flow through the stages. At the start and end some stages sit idle: the <strong>bubble</strong>.</p>
+<div class="math">bubble fraction = (S − 1) / (M + S − 1)        S = stages,  M = micro-batches</div>
+<p>More micro-batches shrink the bubble. Schedules such as <strong>1F1B</strong> and interleaved pipelines also cut activation memory.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Watch the pipeline fill and drain</h3></div><p class="how">Yellow blocks are forward passes, red are backward passes, grey is idle time. Rows are GPUs, columns are time.</p>
+<div class="ctl"><label>Stages S <b id="plSV">4</b><input id="plS" type="range" min="2" max="8" step="1" value="4"></label><label>Micro-batches M <b id="plMV">6</b><input id="plM" type="range" min="1" max="16" step="1" value="6"></label></div>
+<canvas id="prPipe" style="aspect-ratio:21/9" aria-label="Pipeline schedule across GPUs"></canvas>
+<div class="read"><div><small>Bubble fraction</small><span id="plB">-</span></div><div><small>GPU utilisation</small><span id="plU">-</span></div><div><small>Time slots</small><span id="plT">-</span></div></div>
+</div>
+</section>
+
+<section class="sec" id="serve"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Serving LLMs: batching and the KV cache</h2></div><label class="learned"><input type="checkbox" data-learn="serve"> Got it</label></div>
+<div class="prose">
+<p>Generating text is <strong>memory-bandwidth bound</strong>: each new token reads all the weights. The fix is to serve many requests at once. Naive <em>static batching</em> waits for the longest request in a batch. <strong>Continuous batching</strong> (used by vLLM, TensorRT-LLM, SGLang and others) lets a new request take a slot the moment another finishes.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Static versus continuous batching</h3></div><p class="how">Each bar is one request, with length equal to the tokens it generates. Slots are rows. The sweep shows time passing.</p>
+<div class="ctl"><label>Batch slots <b id="cbSV">4</b><input id="cbS" type="range" min="2" max="8" step="1" value="4"></label><button class="btn primary" id="cbNew" type="button">New requests</button></div>
+<canvas id="prBatch" style="aspect-ratio:21/10" aria-label="Static and continuous batching timelines"></canvas>
+<div class="read"><div><small>Static: total steps</small><span id="cbA">-</span></div><div><small>Continuous: total steps</small><span id="cbB">-</span></div><div><small>Throughput gain</small><span id="cbC">-</span></div></div>
+</div>
+<div class="prose">
+<p>Every token already generated keeps its keys and values in the <strong>KV cache</strong>, so memory grows with sequence length and batch size. <strong>PagedAttention</strong> stores the cache in small fixed blocks, like virtual memory, so there is little fragmentation and prefixes can be shared.</p>
+<div class="math">KV bytes = 2 · layers · kv_heads · head_dim · bytes_per_value · tokens · batch</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>KV cache memory</h3></div><p class="how">Grouped-query attention (fewer KV heads) and 8-bit cache values both cut the cache. Compare with the model weights.</p>
+<div class="ctl"><label>Model<select id="kvM"><option value="8">8B, 8 KV heads (GQA)</option><option value="70">70B, 8 KV heads (GQA)</option><option value="7">7B, 32 KV heads (full attention)</option></select></label><label>Context tokens <b id="kvTV">8192</b><input id="kvT" type="range" min="1024" max="131072" step="1024" value="8192"></label><label>Concurrent requests <b id="kvBV">16</b><input id="kvB" type="range" min="1" max="128" step="1" value="16"></label><label>Cache type<select id="kvD"><option value="2">16-bit</option><option value="1">8-bit (fp8)</option></select></label></div>
+<canvas id="prKv" style="aspect-ratio:21/6" aria-label="Weights and KV cache memory"></canvas>
+<div class="read"><div><small>KV cache</small><span id="kvA">-</span></div><div><small>Weights (16-bit)</small><span id="kvW">-</span></div><div><small>Per token</small><span id="kvP">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · serving with vLLM</span><button type="button">Copy</button></div><pre># server (OpenAI-compatible API):
+#   vllm serve meta-llama/Llama-3.1-8B-Instruct --max-model-len 16384 --gpu-memory-utilization 0.90 \
+#        --enable-prefix-caching --quantization fp8
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="none")
+r = client.chat.completions.create(model="meta-llama/Llama-3.1-8B-Instruct",
+        messages=[{"role": "user", "content": "Summarise PagedAttention in one sentence."}], max_tokens=100)
+print(r.choices[0].message.content)
+
+# offline batch inference
+from vllm import LLM, SamplingParams
+llm = LLM("meta-llama/Llama-3.1-8B-Instruct")
+outs = llm.generate(prompts, SamplingParams(temperature=0.2, max_tokens=256))</pre></div>
+<div class="tw"><table><thead><tr><th>Metric</th><th>Meaning</th><th>What helps</th></tr></thead><tbody>
+<tr><td>TTFT (time to first token)</td><td>Wait before text starts. Dominated by reading the prompt</td><td>Prefix caching, shorter prompts, chunked prefill</td></tr>
+<tr><td>TPOT (time per output token)</td><td>Speed of streaming after the first token</td><td>Quantisation, speculative decoding, faster GPUs</td></tr>
+<tr><td>Throughput</td><td>Tokens per second across all users</td><td>Continuous batching, larger batches, quantised KV cache</td></tr>
+<tr><td>Cost per million tokens</td><td>What you pay to serve</td><td>Batching, smaller models, routing easy requests to cheaper models</td></tr>
+</tbody></table></div>
+</section>
+
+<section class="sec" id="tune"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>Experiment tracking and hyperparameter search</h2></div><label class="learned"><input type="checkbox" data-learn="tune"> Got it</label></div>
+<div class="prose">
+<p>Every serious team <strong>tracks experiments</strong>: the code version, data version, settings, metrics over time and output files. Without it, nobody can reproduce a result. Common tools are MLflow and Weights & Biases.</p>
+<p>For tuning, the standard tools are Optuna and Ray Tune. They use random or Bayesian search and <strong>early stopping of bad trials</strong>. Random search beats a grid when only a few settings matter, because a grid wastes trials repeating the same value of the important setting.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Grid versus random search</h3></div><p class="how">Only the horizontal setting matters here (the best value is near 0.37). With the same number of trials a grid tests only a few distinct values of it.</p>
+<div class="ctl"><label>Trials <b id="gsNV">9</b><input id="gsN" type="range" min="4" max="36" step="1" value="9"></label><button class="btn primary" id="gsGo" type="button">Redraw random points</button></div>
+<canvas id="prGrid" style="aspect-ratio:21/9" aria-label="Grid and random search points"></canvas>
+<div class="read"><div><small>Grid: best score</small><span id="gsA">-</span></div><div><small>Random: best score</small><span id="gsB">-</span></div><div><small>Random wins (200 runs)</small><span id="gsC">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · MLflow tracking and an Optuna study</span><button type="button">Copy</button></div><pre>import mlflow, optuna
+
+def objective(trial):
+    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
+    wd = trial.suggest_float("weight_decay", 1e-4, 1e-1, log=True)
+    with mlflow.start_run(nested=True):
+        mlflow.log_params({"lr": lr, "weight_decay": wd})
+        model = build_model()
+        for epoch in range(20):
+            val = train_one_epoch(model, lr, wd)
+            mlflow.log_metric("val_loss", val, step=epoch)
+            trial.report(val, epoch)
+            if trial.should_prune():                    # stop clearly bad trials early
+                raise optuna.TrialPruned()
+    return val
+
+mlflow.set_experiment("churn-model")
+with mlflow.start_run():
+    study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
+    study.optimize(objective, n_trials=50)
+    mlflow.log_params(study.best_params)</pre></div>
+<div class="tips"><h4>What to log</h4>
+<ul><li>Git commit, dataset version or hash, full config, random seeds, library versions.</li><li>Training and validation metrics per step, plus final test metrics, kept separate from tuning metrics.</li><li>The model file and a small set of example predictions you can eyeball.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="drift"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>Monitoring and drift</h2></div><label class="learned"><input type="checkbox" data-learn="drift"> Got it</label></div>
+<div class="prose">
+<p>A deployed model degrades silently because the world changes. <strong>Data drift</strong> is a change in input distribution. <strong>Concept drift</strong> is a change in the relationship between inputs and the right answer. Labels often arrive late, so teams watch input and output distributions first. Two common measures:</p>
+<div class="math">PSI = Σ over bins (actualᵢ − expectedᵢ) · ln( actualᵢ / expectedᵢ )        &lt; 0.1 stable · 0.1–0.25 watch · &gt; 0.25 act
+KS = max over x of | F_live(x) − F_ref(x) |</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Detect a shifted feature</h3></div><p class="how">Grey is the training-time reference. Yellow is live traffic. Move the mean or spread, or press Animate to let it drift.</p>
+<div class="ctl"><label>Mean shift <b id="drMV">0.0</b><input id="drM" type="range" min="-2" max="2" step="0.05" value="0"></label><label>Spread <b id="drSV">1.0</b><input id="drS" type="range" min="0.5" max="2" step="0.05" value="1"></label><button class="btn primary" id="drAn" type="button">Animate drift</button></div>
+<canvas id="prDrift" style="aspect-ratio:21/9" aria-label="Reference and live histograms"></canvas>
+<div class="read"><div><small>PSI</small><span id="drP">-</span></div><div><small>KS statistic</small><span id="drK">-</span></div><div><small>Status</small><span id="drT">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · PSI and a KS test</span><button type="button">Copy</button></div><pre>import numpy as np
+from scipy.stats import ks_2samp
+
+def psi(ref, live, bins=10, eps=1e-6):
+    edges = np.quantile(ref, np.linspace(0, 1, bins + 1)); edges[0], edges[-1] = -np.inf, np.inf
+    e = np.histogram(ref,  edges)[0] / len(ref)  + eps
+    a = np.histogram(live, edges)[0] / len(live) + eps
+    return float(np.sum((a - e) * np.log(a / e)))
+
+stat, p = ks_2samp(ref_feature, live_feature)
+if psi(ref_feature, live_feature) &gt; 0.25:
+    alert("feature drifted: investigate the pipeline, then consider retraining")</pre></div>
+<div class="tips"><h4>Monitoring in practice</h4>
+<ul><li>Watch inputs, predictions and (when they arrive) outcomes. Also watch data quality: missing rates, ranges and new categories.</li><li>Training-serving skew, where a feature is computed differently online than offline, causes more production bugs than model choice. Reuse the same code or a feature store.</li><li>Define in advance what triggers retraining, rollback or a human review.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="ab"><div class="sec-head"><div><div class="kick">Concept 06</div><h2>A/B testing a model</h2></div><label class="learned"><input type="checkbox" data-learn="ab"> Got it</label></div>
+<div class="prose">
+<p>Offline metrics do not guarantee business results. Industry practice is to compare models on live traffic with a randomised split. Before starting, decide the metric, the smallest effect that matters, and the <strong>sample size</strong>.</p>
+<div class="math">z = (p_B − p_A) / √( p̄(1−p̄)(2/n) )        n per arm ≈ 2 · (z_α/2 + z_power)² · p̄(1−p̄) / δ²</div>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Is the lift real?</h3></div><p class="how">Set the conversion rate and the true relative lift. The curves are the distribution of the observed difference with no effect (grey) and with the true effect (yellow).</p>
+<div class="ctl"><label>Baseline rate <b id="abPV">5.0</b>%<input id="abP" type="range" min="1" max="40" step="0.5" value="5"></label><label>True relative lift <b id="abLV">10</b>%<input id="abL" type="range" min="1" max="50" step="1" value="10"></label><label>Users per arm <b id="abNV">10000</b><input id="abN" type="range" min="2" max="6" step="0.05" value="4"></label></div>
+<canvas id="prAb" style="aspect-ratio:21/8" aria-label="Distributions of the difference under no effect and true effect"></canvas>
+<div class="read"><div><small>Power (chance to detect)</small><span id="abW">-</span></div><div><small>Users per arm for 80% power</small><span id="abR">-</span></div><div><small>Expected z</small><span id="abZ">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · a two-proportion test and sample size</span><button type="button">Copy</button></div><pre>from statsmodels.stats.proportion import proportions_ztest
+from statsmodels.stats.power import NormalIndPower
+from statsmodels.stats.proportion import proportion_effectsize
+
+z, p = proportions_ztest(count=[conv_a, conv_b], nobs=[n_a, n_b])
+es = proportion_effectsize(0.055, 0.05)                    # target rate versus baseline
+n = NormalIndPower().solve_power(es, power=0.8, alpha=0.05)
+print(f"need about {int(n)} users per arm")</pre></div>
+<div class="tips trap"><h4>Common traps</h4><p>Peeking at results every day and stopping when p &lt; 0.05 inflates false positives. Fix the sample size in advance, or use a sequential test designed for repeated looks.</p></div>
+</section>
+
+<section class="sec" id="deploy"><div class="sec-head"><div><div class="kick">Concept 07</div><h2>Deployment, export and safe rollout</h2></div><label class="learned"><input type="checkbox" data-learn="deploy"> Got it</label></div>
+<div class="tw"><table><thead><tr><th>Step</th><th>Common tools</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>Export</td><td>ONNX, TorchScript, <code>torch.compile</code>, SafeTensors, GGUF</td><td>Portable, faster inference without the training code</td></tr>
+<tr><td>Optimise</td><td>ONNX Runtime, TensorRT, quantisation (INT8, FP8, 4-bit)</td><td>Lower latency and cost</td></tr>
+<tr><td>Package</td><td>Docker, Kubernetes, KServe, BentoML, Triton</td><td>Repeatable, scalable serving</td></tr>
+<tr><td>Registry</td><td>MLflow Model Registry, cloud registries</td><td>Versioned models with approval stages</td></tr>
+<tr><td>Release</td><td>Shadow, canary, blue-green</td><td>Limit the impact of a bad model</td></tr>
+<tr><td>Operate</td><td>Dashboards, alerts, rollback</td><td>Notice and fix problems quickly</td></tr>
+</tbody></table></div>
+<div class="code"><div class="code-h"><span>Python · export to ONNX and run it</span><button type="button">Copy</button></div><pre>import torch, onnxruntime as ort, numpy as np
+
+model.eval()
+dummy = torch.randn(1, 3, 224, 224)
+torch.onnx.export(model, dummy, "model.onnx", input_names=["x"], output_names=["logits"],
+                  dynamic_axes={"x": {0: "batch"}}, opset_version=17)
+
+sess = ort.InferenceSession("model.onnx", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+x = np.random.randn(4, 3, 224, 224).astype(np.float32)
+onnx_out = sess.run(None, {"x": x})[0]
+torch_out = model(torch.from_numpy(x)).detach().numpy()
+assert np.allclose(onnx_out, torch_out, atol=1e-4)      # always compare exported and original on the same inputs</pre></div>
+<div class="tips"><h4>Rollout</h4>
+<ul><li><strong>Shadow</strong>: the new model runs on real traffic but its answers are not shown. Compare with the current model.</li><li><strong>Canary</strong>: send 1–5% of users to it, watch metrics, then ramp up.</li><li>Keep the previous version one switch away. Test rollback before you need it.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="minis"><div class="sec-head"><div><div class="kick">Concept 08</div><h2>Small details that matter</h2></div><label class="learned"><input type="checkbox" data-learn="minis"> Got it</label></div>
+<div class="mini-grid"><div class="mini"><h4>All-reduce</h4><p>Operation that sums a tensor across all GPUs and gives everyone the result. Ring all-reduce keeps per-GPU traffic nearly constant as GPUs grow.</p><div class="math">bytes per GPU ≈ 2 · (n−1)/n · size</div><code class="i">dist.all_reduce(grad)</code></div><div class="mini"><h4>Gradient accumulation across ranks</h4><p>Skip the all-reduce on intermediate micro-steps and sync only on the last one.</p><div class="math">sync every k steps</div><code class="i">with model.no_sync(): loss.backward()</code></div><div class="mini"><h4>MFU</h4><p>Share of the hardware's peak FLOPs that your training actually uses.</p><div class="math">MFU = 6·P·tokens_per_s / peak_FLOPs</div><code class="i">mfu = 6 * n_params * tok_s / peak</code></div><div class="mini"><h4>Activation checkpointing</h4><p>Recompute activations during backward instead of storing them. Pairs with sharding to fit bigger models.</p><div class="math">compute +30%, memory ↓↓</div><code class="i">torch.utils.checkpoint.checkpoint(block, x)</code></div><div class="mini"><h4>Prefix caching</h4><p>Reuse the KV cache of a shared prompt start, such as a long system prompt, across requests.</p><div class="math">TTFT ↓ for repeated prefixes</div><code class="i">--enable-prefix-caching</code></div><div class="mini"><h4>Speculative decoding</h4><p>A small model drafts several tokens and the large model verifies them in one pass. Output is unchanged, latency drops.</p><div class="math">speedup ≈ accepted tokens per step</div><code class="i">LLM(model, speculative_config={...})</code></div><div class="mini"><h4>Chunked prefill</h4><p>Split long prompt processing into pieces mixed with decode steps so short requests are not blocked.</p><div class="math">smoother TPOT</div><code class="i">--enable-chunked-prefill</code></div><div class="mini"><h4>Training-serving skew</h4><p>A feature computed differently in training and in production. It silently harms accuracy.</p><div class="math">offline feature ≠ online feature</div><code class="i">assert np.allclose(offline, online)</code></div><div class="mini"><h4>Data and concept drift</h4><p>Inputs changed versus the relationship to labels changed. Different fixes: reweight and monitor versus retrain.</p><div class="math">P(x) changes vs P(y|x) changes</div><code class="i">monitor(psi, label_delay)</code></div><div class="mini"><h4>Model registry</h4><p>A central store of model versions with metadata, metrics and promotion stages.</p><div class="math">staging → production</div><code class="i">mlflow.register_model(uri, "churn")</code></div><div class="mini"><h4>Reproducibility</h4><p>Fix seeds, record versions, and know that some GPU kernels are nondeterministic.</p><div class="math">same code + data + seed ≈ same result</div><code class="i">torch.use_deterministic_algorithms(True)</code></div><div class="mini"><h4>Checkpoint and resume</h4><p>Save model, optimiser, scheduler, data position and random state so a crashed run continues exactly.</p><div class="math">state = {model, opt, sched, step, rng}</div><code class="i">torch.save(state, path)</code></div></div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="prod"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="prod.js"></script>
+</body></html>

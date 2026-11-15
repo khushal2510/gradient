@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Transformers & LLMs · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">04 · Transformers and LLMs</p>
+<h1>Inside the <em>transformer</em> and the language model</h1>
+<p class="lead">From text to tokens to vectors, through attention and feed-forward layers, out to a probability for the next token. Explore a transformer as a 3D object, see attention weights form, sample from a distribution and work out what training and fine-tuning cost.</p>
+<div class="chips"><span class="chip">tokens</span><span class="chip">embeddings</span><span class="chip">attention</span><span class="chip">decoding</span><span class="chip">LoRA</span><span class="chip">RAG</span></div>
+</div><canvas id="heroCv" data-art="attn" aria-label="Animated attention links between tokens"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="token"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>Tokenisation: turning text into numbers</h2></div><label class="learned"><input type="checkbox" data-learn="token"> Got it</label></div>
+<div class="prose">
+<p>Models cannot read letters, so text is split into <strong>tokens</strong>, small pieces that map to integer IDs. Whole words would need an enormous vocabulary and could not handle new words. Single characters make sequences too long. <strong>Byte-pair encoding (BPE)</strong> sits in the middle: start from characters and repeatedly merge the most frequent adjacent pair into a new token.</p>
+<p>Common words end up as one token; rare words break into reusable pieces. This is why a model can read a word it has never seen, and why token counts, not word counts, set context limits and prices.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Train a tiny BPE tokeniser</h3></div><p class="how">Edit the training text, then slide the number of merges. Watch frequent pairs fuse into longer tokens. Type your own words at the bottom to see how they would be split.</p>
+<div class="ctl"><label style="flex-basis:100%">Training text<textarea id="bpeTxt" class="field" rows="2" style="font-family:var(--font-mono)">low low low low low lower lower newest newest newest newest newest newest widest widest widest</textarea></label>
+<label>Merges <b id="bpeNV">8</b><input id="bpeN" type="range" min="0" max="30" step="1" value="8"></label>
+<label>Try your own words<input id="bpeIn" class="field" type="text" value="lowest newer wide"></label></div>
+<div class="stage even"><div><div class="note" style="margin-bottom:6px">Merges learned</div><div class="tokens" id="bpeMerges"></div></div><div><div class="note" style="margin-bottom:6px">Training words as tokens</div><div class="tokens" id="bpeSeg"></div></div></div>
+<div class="note" style="margin-top:4px">Your words →</div><div class="tokens" id="bpeOut"></div>
+<div class="read"><div><small>Vocabulary size</small><span id="bpeV">-</span></div><div><small>Tokens per word (training)</small><span id="bpeR">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · BPE merge loop and a real tokenizer</span><button type="button">Copy</button></div><pre>from collections import Counter
+
+def bpe_merges(words, n_merges):
+    seqs = {w: list("▁" + w) for w in set(words)}          # start from characters
+    freq = Counter(words)
+    merges = []
+    for _ in range(n_merges):
+        pairs = Counter()
+        for w, toks in seqs.items():
+            for a, b in zip(toks, toks[1:]):
+                pairs[(a, b)] += freq[w]
+        if not pairs: break
+        (a, b), _ = pairs.most_common(1)[0]
+        merges.append((a, b))
+        for w, toks in seqs.items():                        # apply the merge everywhere
+            out, i = [], 0
+            while i &lt; len(toks):
+                if i &lt; len(toks) - 1 and (toks[i], toks[i + 1]) == (a, b):
+                    out.append(a + b); i += 2
+                else:
+                    out.append(toks[i]); i += 1
+            seqs[w] = out
+    return merges
+
+# With a real library (tiktoken or Hugging Face tokenizers):
+# import tiktoken; enc = tiktoken.get_encoding("cl100k_base"); enc.encode("Hello, world")</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Count tokens, not words, when you budget context windows or cost. English averages roughly 1.3 tokens per word, and other languages and code can be much higher.</li><li>Tokenisation explains odd failures: models struggle to spell words or count letters partly because they see tokens, not characters.</li><li>Always use the tokenizer that matches the model. IDs from a different vocabulary mean nothing.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="embed"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Embeddings: meaning as geometry</h2></div><label class="learned"><input type="checkbox" data-learn="embed"> Got it</label></div>
+<div class="prose">
+<p>Each token ID indexes a row of a learned table, giving a vector (hundreds to thousands of numbers). Training pushes tokens used in similar contexts toward similar vectors, so directions in this space come to encode meaning. The classic example is that <code>king − man + woman ≈ queen</code>.</p>
+<p>Similarity between vectors is usually measured by cosine similarity. The same idea powers semantic search, recommendation and retrieval-augmented generation.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Word vectors in 3D</h3></div><p class="how">These coordinates are hand-placed to show the idea. Real embeddings have hundreds of dimensions and are learned. Pick an analogy and the arrow a→b is applied starting at c to find the answer. Drag to rotate.</p>
+<canvas id="embCv" style="aspect-ratio:16/10" aria-label="3D word embedding space"></canvas>
+<div class="ctl"><label>Analogy<select id="embSel"><option value="0">man : king :: woman : ?</option><option value="1">France : Paris :: Japan : ?</option><option value="2">Italy : Rome :: France : ?</option><option value="3">king : queen :: prince : ?</option></select></label></div>
+<div class="read"><div><small>Vector arithmetic</small><span id="embEq">-</span></div><div><small>Nearest word</small><span id="embAns">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · cosine similarity and nearest neighbours</span><button type="button">Copy</button></div><pre>import numpy as np
+
+def cosine(a, b):
+    return a @ b / (np.linalg.norm(a) * np.linalg.norm(b))
+
+def nearest(query, table, words, exclude=()):
+    sims = [(cosine(query, v), w) for w, v in zip(words, table) if w not in exclude]
+    return max(sims)
+
+# analogy: king - man + woman
+# q = E["king"] - E["man"] + E["woman"]; nearest(q, E_matrix, vocab, exclude={"king","man","woman"})</pre></div>
+<div class="tips"><h4>Industry now</h4><ul><li>Word2vec-style analogies explain the idea. Production systems use <strong>contrastively trained text embedding models</strong> (sentence-level, often 384 to 3072 dimensions) stored in a vector database. See the Applied LLMs page.</li></ul></div>
+</section>
+
+<section class="sec" id="attn"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Self-attention</h2></div><label class="learned"><input type="checkbox" data-learn="attn"> Got it</label></div>
+<div class="prose">
+<p>Attention lets every token look at every other token and decide how much to listen to each. Each token produces a <strong>query</strong> (what I am looking for), a <strong>key</strong> (what I offer) and a <strong>value</strong> (what I pass on). Scores are query–key dot products, softmax turns them into weights, and the output is the weighted sum of values:</p>
+<div class="math">Attention(Q, K, V) = softmax( Q·Kᵀ / √d_k ) · V
+Q = X·W_Q    K = X·W_K    V = X·W_V</div>
+<p>Dividing by <code>√d_k</code> keeps dot products from growing with dimension, which would push softmax into saturated, near one-hot weights with tiny gradients. A <strong>causal mask</strong> hides future tokens so a language model can only look backwards. <strong>Multi-head</strong> attention runs several smaller attentions in parallel so different heads can specialise.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Attention weights for a sentence</h3></div><p class="how">The weights below come from random, untrained projections, so they show the mechanics (softmax, scaling, masking) and not learned meaning. Click a row label to focus on one query token.</p>
+<div class="ctl"><label>Sentence<select id="atS"><option value="the cat sat on the mat because it was tired">the cat sat on the mat because it was tired</option><option value="attention is all you need">attention is all you need</option><option value="the quick brown fox jumps over the lazy dog">the quick brown fox jumps over the lazy dog</option></select></label>
+<label>Softmax temperature <b id="atTV">1.0</b><input id="atT" type="range" min="0.2" max="3" step="0.1" value="1"></label>
+<div class="btns"><button class="btn" id="atScale" type="button" aria-pressed="true">Divide by √d on</button><button class="btn" id="atMask" type="button" aria-pressed="false">Causal mask off</button></div></div>
+<canvas id="atCv" style="aspect-ratio:16/10;max-height:520px" aria-label="Attention weight heatmap"></canvas>
+<p class="note" id="atNote">Click a row to see where that token attends.</p>
+</div>
+<div class="code"><div class="code-h"><span>Python · scaled dot-product attention and multi-head attention</span><button type="button">Copy</button></div><pre>import math, torch, torch.nn as nn
+
+def attention(q, k, v, causal=True):
+    d = q.size(-1)
+    scores = q @ k.transpose(-2, -1) / math.sqrt(d)            # (B, heads, T, T)
+    if causal:
+        T = scores.size(-1)
+        mask = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
+        scores = scores.masked_fill(mask, float("-inf"))        # hide the future
+    return torch.softmax(scores, dim=-1) @ v
+
+class MultiHead(nn.Module):
+    def __init__(self, d=256, heads=8):
+        super().__init__()
+        self.h, self.qkv, self.o = heads, nn.Linear(d, 3 * d), nn.Linear(d, d)
+    def forward(self, x):
+        B, T, D = x.shape
+        q, k, v = self.qkv(x).view(B, T, 3, self.h, D // self.h).permute(2, 0, 3, 1, 4)
+        y = attention(q, k, v).transpose(1, 2).reshape(B, T, D)   # merge the heads
+        return self.o(y)
+
+print(MultiHead()(torch.randn(2, 10, 256)).shape)</pre></div>
+</section>
+
+<section class="sec" id="arch"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>The transformer architecture in 3D</h2></div><label class="learned"><input type="checkbox" data-learn="arch"> Got it</label></div>
+<div class="prose">
+<p>A decoder-only transformer (the GPT family) is a stack of identical blocks around a <strong>residual stream</strong>, a running vector for each token that every layer reads from and writes back into.</p>
+<div class="math">x₀ = TokenEmbedding(ids) + Position
+for each block:   x ← x + Attention( LayerNorm(x) )
+                  x ← x + MLP( LayerNorm(x) )          MLP = W₂ · GELU(W₁ · x)
+logits = Unembedding( LayerNorm(x) )                    next-token probabilities = softmax(logits)</div>
+<p>Attention is the only place tokens exchange information. The MLP processes each token on its own and holds much of the model's stored knowledge. Almost all parameters sit in these two parts.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Fly around a transformer</h3></div><p class="how">Drag to rotate. Tokens (vertical columns) rise through the stack along the residual stream. Choose a component to highlight it and read what it does. Change the number of layers and heads and watch the geometry.</p>
+<canvas id="trCv3" style="aspect-ratio:16/10" aria-label="3D transformer architecture"></canvas>
+<div class="ctl"><div class="seg" role="group" aria-label="Component" id="trSeg"><button type="button" data-k="all" aria-pressed="true">Overview</button><button type="button" data-k="emb" aria-pressed="false">Embedding</button><button type="button" data-k="attn" aria-pressed="false">Attention</button><button type="button" data-k="mlp" aria-pressed="false">MLP</button><button type="button" data-k="res" aria-pressed="false">Residual + norm</button><button type="button" data-k="out" aria-pressed="false">Output</button></div></div>
+<div class="ctl"><label>Layers <b id="trLV">3</b><input id="trL" type="range" min="1" max="8" step="1" value="3"></label><label>Attention heads <b id="trHV">4</b><input id="trH" type="range" min="1" max="8" step="1" value="4"></label></div>
+<div class="tips" id="trInfo"></div>
+<p class="hint3">Drag to orbit.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Count the parameters</h3></div><p class="how">Roughly 12·L·d² parameters per stack of blocks, plus the embedding table. Try the sizes of well-known model scales.</p>
+<div class="ctl"><label>Layers L<input id="pmL" type="number" min="1" max="200" value="32"></label><label>Model width d<input id="pmD" type="number" min="64" max="32768" step="64" value="4096"></label><label>Vocabulary V<input id="pmV" type="number" min="1000" max="500000" step="1000" value="32000"></label></div>
+<div class="read"><div><small>Attention params</small><span id="pmA">-</span></div><div><small>MLP params</small><span id="pmM">-</span></div><div><small>Embedding params</small><span id="pmE">-</span></div><div><small>Total</small><span id="pmT">-</span></div><div><small>fp16 weights</small><span id="pmG">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · a minimal GPT-style block and model</span><button type="button">Copy</button></div><pre>import torch, torch.nn as nn
+
+class Block(nn.Module):
+    def __init__(self, d=256, heads=8):
+        super().__init__()
+        self.n1, self.n2 = nn.LayerNorm(d), nn.LayerNorm(d)
+        self.attn = nn.MultiheadAttention(d, heads, batch_first=True)
+        self.mlp = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+    def forward(self, x):
+        T = x.size(1)
+        causal = torch.triu(torch.ones(T, T, dtype=torch.bool, device=x.device), 1)
+        h = self.n1(x)
+        x = x + self.attn(h, h, h, attn_mask=causal, need_weights=False)[0]   # attention writes to the stream
+        return x + self.mlp(self.n2(x))                                       # MLP writes to the stream
+
+class TinyGPT(nn.Module):
+    def __init__(self, vocab=1000, d=256, layers=4, ctx=128):
+        super().__init__()
+        self.tok, self.pos = nn.Embedding(vocab, d), nn.Embedding(ctx, d)
+        self.blocks = nn.Sequential(*[Block(d) for _ in range(layers)])
+        self.norm, self.head = nn.LayerNorm(d), nn.Linear(d, vocab, bias=False)
+    def forward(self, ids):
+        x = self.tok(ids) + self.pos(torch.arange(ids.size(1), device=ids.device))
+        return self.head(self.norm(self.blocks(x)))          # logits for every position
+
+print(TinyGPT()(torch.randint(0, 1000, (2, 16))).shape)     # (2, 16, 1000)</pre></div>
+</section>
+
+<section class="sec" id="sampling"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>Decoding: choosing the next token</h2></div><label class="learned"><input type="checkbox" data-learn="sampling"> Got it</label></div>
+<div class="prose">
+<p>The model outputs a probability for every token. <strong>Greedy</strong> decoding always takes the top one, which is repetitive. <strong>Sampling</strong> draws from the distribution, shaped by three controls:</p>
+<ul><li><strong>Temperature</strong> divides the logits before softmax. Below 1 sharpens, above 1 flattens.</li><li><strong>Top-k</strong> keeps only the k most likely tokens.</li><li><strong>Top-p (nucleus)</strong> keeps the smallest set of tokens whose probabilities add up to p.</li></ul>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Shape the next-token distribution</h3></div><p class="how">Illustrative probabilities for a few prompts. Grey bars are removed by top-k or top-p. Press Sample to draw a token from what remains.</p>
+<div class="ctl"><label>Prompt<select id="spP"></select></label><label>Temperature <b id="spTV">1.0</b><input id="spT" type="range" min="0.1" max="2.5" step="0.05" value="1"></label><label>Top-k <b id="spKV">12</b><input id="spK" type="range" min="1" max="12" step="1" value="12"></label><label>Top-p <b id="spPV">1.00</b><input id="spPp" type="range" min="0.1" max="1" step="0.01" value="1"></label></div>
+<div class="bars" id="spBars"></div>
+<div class="btns"><button class="btn primary" id="spGo" type="button">Sample a token</button><button class="btn" id="spClr" type="button">Clear</button></div>
+<div class="note" id="spOut">Prompt + sampled tokens appear here.</div>
+</div>
+<div class="code"><div class="code-h"><span>Python · temperature, top-k and top-p sampling</span><button type="button">Copy</button></div><pre>import torch
+
+def sample(logits, temperature=1.0, top_k=None, top_p=None):
+    logits = logits / max(temperature, 1e-6)
+    if top_k:
+        kth = torch.topk(logits, top_k).values[-1]
+        logits = logits.masked_fill(logits &lt; kth, float("-inf"))
+    probs = torch.softmax(logits, dim=-1)
+    if top_p:
+        p, idx = torch.sort(probs, descending=True)
+        cum = p.cumsum(0)
+        drop = cum - p &gt; top_p                       # tokens beyond the nucleus
+        p[drop] = 0
+        probs = torch.zeros_like(probs).scatter(0, idx, p / p.sum())
+    return torch.multinomial(probs, 1).item()</pre></div>
+</section>
+
+<section class="sec" id="scale"><div class="sec-head"><div><div class="kick">Concept 06</div><h2>Scale, pretraining and compute</h2></div><label class="learned"><input type="checkbox" data-learn="scale"> Got it</label></div>
+<div class="prose">
+<p>Training a language model is next-token prediction on huge text corpora (<em>pretraining</em>). Compute for a dense transformer is about <code>C ≈ 6·N·D</code> floating-point operations, where <code>N</code> is parameters and <code>D</code> is training tokens. The Chinchilla study (Hoffmann et al., 2022) found that for a fixed compute budget, parameters and tokens should grow together, at roughly <strong>20 tokens per parameter</strong>. Many modern models train on far more than this to make a smaller model cheaper to run.</p>
+<p>After pretraining, models are usually refined with <strong>supervised fine-tuning</strong> on instruction–answer examples and then <strong>preference tuning</strong> (RLHF, or simpler methods such as DPO) so answers follow human preferences.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>A back-of-envelope training budget</h3></div><p class="how">Rules of thumb only. Real runs depend on hardware efficiency, architecture and engineering.</p>
+<div class="ctl"><label>Parameters N (billions)<input id="scN" type="number" min="0.01" step="any" value="7"></label><label>Training tokens D (billions)<input id="scD" type="number" min="0.1" step="any" value="1400"></label><label>Peak chip speed (TFLOP/s)<input id="scF" type="number" min="1" value="990"></label><label>Utilisation <b id="scUV">40%</b><input id="scU" type="range" min="10" max="70" step="1" value="40"></label></div>
+<div class="read"><div><small>Tokens per parameter</small><span id="scR">-</span></div><div><small>Training compute</small><span id="scC">-</span></div><div><small>Chip-hours</small><span id="scH">-</span></div><div><small>On 1,000 chips</small><span id="scDay">-</span></div></div>
+</div>
+</section>
+
+<section class="sec" id="peft"><div class="sec-head"><div><div class="kick">Concept 07</div><h2>Fine-tuning efficiently with LoRA</h2></div><label class="learned"><input type="checkbox" data-learn="peft"> Got it</label></div>
+<div class="prose">
+<p>Updating every weight of a large model needs optimiser state several times the model's size. <strong>LoRA</strong> freezes the original weight <code>W</code> and learns a small low-rank update instead:</p>
+<div class="math">W' = W + (α / r) · B · A          W: d×k (frozen)    B: d×r    A: r×k    r ≪ min(d, k)
+trainable parameters per matrix = r · (d + k)</div>
+<p><strong>QLoRA</strong> also stores the frozen weights in 4-bit precision, so large models can be tuned on a single GPU. The adapters are tiny files that can be swapped or merged back into W.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>How many parameters does LoRA train?</h3></div><p class="how">Compare the adapter size with a full d×d weight matrix.</p>
+<div class="ctl"><label>Matrix width d<input id="lrD" type="number" min="64" max="32768" step="64" value="4096"></label><label>Rank r <b id="lrRV">8</b><input id="lrR" type="range" min="1" max="128" step="1" value="8"></label></div>
+<canvas id="lrFig" style="aspect-ratio:21/6" aria-label="Full matrix versus LoRA factors"></canvas>
+<div class="read"><div><small>Full matrix</small><span id="lrF">-</span></div><div><small>LoRA (A and B)</small><span id="lrL">-</span></div><div><small>Fraction trained</small><span id="lrP">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · LoRA with Hugging Face peft</span><button type="button">Copy</button></div><pre>from transformers import AutoModelForCausalLM
+from peft import LoraConfig, get_peft_model
+
+model = AutoModelForCausalLM.from_pretrained("your-base-model")
+cfg = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05,
+                 target_modules=["q_proj", "v_proj"], task_type="CAUSAL_LM")
+model = get_peft_model(model, cfg)
+model.print_trainable_parameters()      # typically well under 1% of all parameters</pre></div>
+<div class="tips"><h4>Industry now</h4><ul><li>LoRA and QLoRA are the standard way to adapt open models. Full recipes for SFT, DPO and GRPO are on the Training and fine-tuning page.</li></ul></div>
+</section>
+
+<section class="sec" id="rag"><div class="sec-head"><div><div class="kick">Concept 08</div><h2>Retrieval-augmented generation</h2></div><label class="learned"><input type="checkbox" data-learn="rag"> Got it</label></div>
+<div class="prose">
+<p>A model's knowledge is frozen at training time and can be wrong. <strong>RAG</strong> fixes this by fetching relevant text at question time and putting it in the prompt: split documents into chunks, embed them, find the chunks closest to the question, and ask the model to answer using them. It reduces hallucination and lets you cite sources and update knowledge without retraining.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>A working retrieval step</h3></div><p class="how">This retrieves from eight tiny notes using TF-IDF, a classic word-weighting method. Real systems use learned embeddings, but the pipeline is identical: score, rank, paste into the prompt.</p>
+<div class="ctl"><label style="flex-basis:100%">Question<input id="rgQ" class="field" type="text" value="how do models generate images from noise"></label></div>
+<div class="bars" id="rgBars"></div>
+<div class="math" id="rgPrompt" style="white-space:pre-wrap"></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · retrieval with sentence embeddings</span><button type="button">Copy</button></div><pre>import numpy as np
+from sentence_transformers import SentenceTransformer
+
+docs = ["LoRA trains small low-rank adapters.", "Diffusion models remove noise step by step."]
+enc = SentenceTransformer("all-MiniLM-L6-v2")
+D = enc.encode(docs, normalize_embeddings=True)
+
+def retrieve(question, k=1):
+    q = enc.encode([question], normalize_embeddings=True)[0]
+    top = np.argsort(-(D @ q))[:k]                    # cosine similarity (vectors are normalised)
+    return [docs[i] for i in top]
+
+prompt = "Answer using only this context:\n" + "\n".join(retrieve("how are images generated?")) + "\n\nQuestion: ..."</pre></div>
+<div class="tips trap"><h4>Common traps</h4>
+<ul><li>Bad chunking is the top cause of poor RAG. Chunks that split a thought, or are huge, retrieve badly. Try 200–500 tokens with some overlap.</li><li>Retrieval can return the wrong text, and the model may still sound sure. Evaluate retrieval (recall@k) separately from generation.</li><li>Retrieved text can contain instructions. Treat it as untrusted data to avoid prompt injection.</li></ul>
+</div>
+<div class="tips"><h4>Industry now</h4><ul><li>TF-IDF shows the principle. Production retrieval uses <strong>BM25 plus dense embeddings, fused and reranked</strong>, with evaluation of recall. The Applied LLMs page has a hands-on comparison.</li></ul></div>
+</section>
+
+<section class="sec" id="mini"><div class="sec-head"><div><div class="kick">Concept 09</div><h2>Small but important concepts</h2></div><label class="learned"><input type="checkbox" data-learn="mini"> Got it</label></div>
+<div class="prose"><p>The parts of the LLM stack that people skip and then get bitten by.</p></div>
+<div class="mini-grid"><div class="mini"><h4>Positional encoding</h4><p>Attention ignores order, so position information is added. The original transformer used fixed sines and cosines.</p><div class="math">PE(pos, 2i) = sin(pos / 10000^(2i/d))</div><code class="i">PE = np.sin(pos / 10000 ** (2 * i / d))</code></div><div class="mini"><h4>Rotary embeddings (RoPE)</h4><p>Rotate query and key vectors by an angle that depends on position, so attention depends on relative distance. Widely used in current models.</p><div class="math">q·k depends on (m − n)</div><code class="i">apply_rotary_emb(q, k, freqs)</code></div><div class="mini"><h4>KV cache</h4><p>When generating, keep each past token's keys and values instead of recomputing them. Memory grows with context length.</p><div class="math">bytes = 2 · L · n_kv · d_head · T · bytes_per_value</div><code class="i">past_key_values = out.past_key_values</code></div><div class="mini"><h4>Context window</h4><p>The most tokens the model can attend to at once. Cost of full attention grows with its square.</p><div class="math">attention cost ∝ T²</div><code class="i">len(tokenizer(text).input_ids)</code></div><div class="mini"><h4>FlashAttention</h4><p>Computes exact attention in tiles that fit fast on-chip memory, avoiding the big T×T matrix in slow memory.</p><div class="math">same result, less memory traffic</div><code class="i">F.scaled_dot_product_attention(q, k, v, is_causal=True)</code></div><div class="mini"><h4>Grouped-query attention</h4><p>Several query heads share one key/value head. Shrinks the KV cache with little quality loss.</p><div class="math">n_kv_heads &lt; n_heads</div><code class="i">n_kv_heads = 8, n_heads = 32</code></div><div class="mini"><h4>Pre-norm</h4><p>Apply LayerNorm before attention and MLP (inside the residual branch). Trains more stably than the original post-norm.</p><div class="math">x ← x + F(LN(x))</div><code class="i">x = x + self.attn(self.ln(x))</code></div><div class="mini"><h4>Weight tying</h4><p>Reuse the embedding matrix as the output projection to save parameters.</p><div class="math">logits = h · Eᵀ</div><code class="i">self.head.weight = self.tok.weight</code></div><div class="mini"><h4>Mixture of experts</h4><p>Many MLP experts, but a router sends each token to only a few. More parameters at similar compute.</p><div class="math">y = Σ g_i(x) · Expert_i(x), top-k gates</div><code class="i">scores = router(x).topk(2)</code></div><div class="mini"><h4>Quantisation</h4><p>Store weights in fewer bits (8 or 4) to cut memory and speed up inference, at some accuracy cost.</p><div class="math">w_q = round(w / s),  w ≈ s · w_q</div><code class="i">load_in_4bit=True</code></div><div class="mini"><h4>Distillation</h4><p>Train a small student to match a large teacher's output distribution.</p><div class="math">loss = KL(p_teacher ‖ p_student)</div><code class="i">F.kl_div(student.log_softmax(-1), teacher.softmax(-1))</code></div><div class="mini"><h4>Chat template</h4><p>Chat models expect specially formatted roles and separators. Wrong formatting quietly lowers quality.</p><div class="math">&lt;system&gt; … &lt;user&gt; … &lt;assistant&gt;</div><code class="i">tokenizer.apply_chat_template(messages)</code></div><div class="mini"><h4>RLHF and DPO</h4><p>Tune the model toward answers humans prefer. DPO does it directly from preference pairs without a separate reward model.</p><div class="math">max log σ(β(log π(y_w)/π_ref(y_w) − log π(y_l)/π_ref(y_l)))</div><code class="i">DPOTrainer(model, ref_model, ...)</code></div><div class="mini"><h4>Hallucination</h4><p>The model produces fluent text that is not grounded in facts. Mitigate with retrieval, citations and verification.</p><div class="math">P(token | context) is plausibility, not truth</div><code class="i">ground the answer in retrieved text</code></div><div class="mini"><h4>Evaluation</h4><p>Test on held-out tasks that match your use case, with fixed prompts and many samples. Public benchmarks can be contaminated.</p><div class="math">accuracy over N examples ± standard error</div><code class="i">lm_eval --model hf --tasks hellaswag</code></div></div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="llm"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="llm.js"></script>
+</body></html>

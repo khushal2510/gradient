@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Classical ML · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">01 · Foundations</p>
+<h1>Classical ML, <em>built up from scratch</em></h1>
+<p class="lead">Before deep nets and LLMs there is a small set of ideas that still does most of the real-world work: fit a model by minimising a loss, check it on data it has not seen, and keep it as simple as the problem allows. Every demo on this page runs live.</p>
+<div class="chips"><span class="chip">regression</span><span class="chip">classification</span><span class="chip">trees</span><span class="chip">clustering</span><span class="chip">bias–variance</span></div>
+</div><canvas id="heroCv" data-art="scatter" aria-label="Animated scatter plot with a moving decision line"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="map"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>The map: which kind of problem is it?</h2></div><label class="learned"><input type="checkbox" data-learn="map"> Got it</label></div>
+<div class="prose">
+<p>Almost every ML task falls into one of a few families. Naming the family first tells you which models, losses and metrics make sense.</p>
+<ul>
+<li><strong>Supervised learning</strong> has labelled examples. Predict a number and it is <em>regression</em>; predict a category and it is <em>classification</em>.</li>
+<li><strong>Unsupervised learning</strong> has no labels. You look for structure: clusters, low-dimensional shape, outliers.</li>
+<li><strong>Self-supervised learning</strong> makes its own labels from the data, such as predicting the next word. This is how modern language and vision models are pretrained (see later pages).</li>
+<li><strong>Reinforcement learning</strong> learns from rewards after actions, covered on the RL page.</li>
+</ul>
+<p>The workflow barely changes between them: define the target and the metric, split the data, build a dumb baseline, then improve. A model that cannot beat the baseline is telling you something about the data.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Which model should I try first?</h3></div><p class="how">Describe your problem and get sensible starting points. These are common defaults, not rules.</p>
+<div class="ctl">
+<label>Data<select id="selData"><option value="tab">Table of numbers and categories</option><option value="img">Images</option><option value="txt">Text</option><option value="ts">Time series</option></select></label>
+<label>Labels<select id="selLab"><option value="num">Yes, a number to predict</option><option value="cat">Yes, a category to predict</option><option value="none">No labels</option></select></label>
+<label>Amount of data<select id="selSize"><option value="s">Under 10,000 rows</option><option value="m">10,000 to 1 million</option><option value="l">Over 1 million</option></select></label>
+</div>
+<div class="tips" id="pickOut" aria-live="polite"></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · a leak-free baseline with scikit-learn</span><button type="button">Copy</button></div><pre>import numpy as np
+from sklearn.datasets import load_breast_cancer
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report
+
+X, y = load_breast_cancer(return_X_y=True)
+X_tr, X_te, y_tr, y_te = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=0)
+
+# The pipeline fits the scaler on training data only, so nothing leaks.
+model = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000))
+model.fit(X_tr, y_tr)
+print(classification_report(y_te, model.predict(X_te)))</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Write down the metric before you train anything. Switching metrics after seeing results is a quiet form of cheating.</li><li>A majority-class or "predict the mean" baseline takes two lines and tells you what "good" means for this dataset.</li><li>Look at your data first: class balance, missing values, duplicates, and whether the label means what you think it means.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="linreg"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Linear regression and gradient descent</h2></div><label class="learned"><input type="checkbox" data-learn="linreg"> Got it</label></div>
+<div class="prose">
+<p>Linear regression fits a line (or plane) to data. The model is <code>ŷ = w·x + b</code>, the loss is the mean squared error, and training means finding the <code>w</code> and <code>b</code> that make that loss small.</p>
+<div class="math">loss(w,b) = mean( (w·x + b − y)² )
+∂loss/∂w = 2 · mean( (ŷ − y) · x )
+∂loss/∂b = 2 · mean( ŷ − y )
+w ← w − lr · ∂loss/∂w</div>
+<p>The gradient points uphill, so each step moves a little downhill. The step size <strong>lr</strong> (learning rate) is the most important knob in all of deep learning too. Too small and training crawls. Too large and each step overshoots until the loss blows up.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Watch gradient descent fit a line</h3></div><p class="how">Press Run, then raise the learning rate above 0.8 and watch the loss diverge. Lower it and watch convergence slow down. The loss plot uses a log scale.</p>
+<div class="stage even"><canvas id="gdFit" style="aspect-ratio:4/3" aria-label="Scatter plot and fitted line"></canvas><canvas id="gdLoss" style="aspect-ratio:4/3" aria-label="Loss against step, log scale"></canvas></div>
+<div class="ctl"><label>Learning rate <b id="gdLrV">0.30</b><input id="gdLr" type="range" min="0.02" max="1" step="0.01" value="0.3"></label>
+<div class="btns"><button class="btn primary" id="gdRun" type="button">Run</button><button class="btn" id="gdStep" type="button">Step</button><button class="btn" id="gdReset" type="button">Reset</button></div></div>
+<div class="read"><div><small>Step</small><span id="gdN">0</span></div><div><small>w</small><span id="gdW">-</span></div><div><small>b</small><span id="gdB">-</span></div><div><small>MSE</small><span id="gdL">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · gradient descent versus the closed form</span><button type="button">Copy</button></div><pre>import numpy as np
+
+rng = np.random.default_rng(0)
+x = rng.uniform(0, 1, 50)
+y = 0.6 * x + 0.25 + rng.normal(0, 0.05, 50)
+
+# 1) gradient descent
+w, b, lr = 0.0, 0.0, 0.5
+for step in range(500):
+    err = (w * x + b) - y
+    w -= lr * 2 * np.mean(err * x)
+    b -= lr * 2 * np.mean(err)
+
+# 2) closed form (least squares), no learning rate needed
+A = np.c_[x, np.ones_like(x)]
+w_ls, b_ls = np.linalg.lstsq(A, y, rcond=None)[0]
+print(w, b, "vs", w_ls, b_ls)</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Standardise features (subtract mean, divide by standard deviation). It makes the loss surface rounder, so one learning rate works for every weight.</li><li>For small linear problems use the closed form or <code>sklearn.linear_model.Ridge</code>. Gradient descent earns its keep when the model has no closed form, which is every neural network.</li><li>If the loss goes up or turns into <code>nan</code>, lower the learning rate before suspecting anything else.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="logreg"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Logistic regression and measuring a classifier</h2></div><label class="learned"><input type="checkbox" data-learn="logreg"> Got it</label></div>
+<div class="prose">
+<p>For classification, logistic regression squashes a linear score through a sigmoid to get a probability, then trains with cross-entropy loss:</p>
+<div class="math">p = sigmoid(w·x + b) = 1 / (1 + e^−(w·x + b))
+loss = −[ y·log(p) + (1−y)·log(1−p) ]</div>
+<p>The model gives scores; <em>you</em> choose a threshold that turns them into decisions. Moving it trades false alarms for misses. The four outcomes (true and false positives and negatives) give the standard metrics:</p>
+<ul><li><strong>Precision</strong> = TP / (TP + FP): of the cases flagged, how many were real.</li><li><strong>Recall</strong> = TP / (TP + FN): of the real cases, how many were found.</li><li><strong>F1</strong> is their harmonic mean. <strong>Accuracy</strong> = (TP + TN) / all.</li></ul>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Slide the decision threshold</h3></div><p class="how">Two overlapping score distributions are drawn with the area scaled by how common each class is. Drop the positive rate to 5% and see how a high accuracy can hide a useless detector.</p>
+<div class="stage even"><canvas id="thDist" style="aspect-ratio:16/10" aria-label="Score distributions with a threshold line"></canvas><canvas id="thRoc" style="aspect-ratio:16/10" aria-label="ROC curve with current operating point"></canvas></div>
+<div class="legend"><span><i style="background:var(--c1)"></i>negatives</span><span><i style="background:var(--c2)"></i>positives</span></div>
+<div class="ctl"><label>Threshold <b id="thTV">0.50</b><input id="thT" type="range" min="0.05" max="0.95" step="0.01" value="0.5"></label><label>Positive rate <b id="thPV">30%</b><input id="thP" type="range" min="2" max="50" step="1" value="30"></label><label>Model quality (separation) <b id="thSV">1.6</b><input id="thS" type="range" min="0.5" max="3" step="0.1" value="1.6"></label></div>
+<div class="read"><div><small>Precision</small><span id="thPr">-</span></div><div><small>Recall</small><span id="thRe">-</span></div><div><small>F1</small><span id="thF">-</span></div><div><small>Accuracy</small><span id="thAc">-</span></div></div>
+<div class="read"><div><small>TP</small><span id="thTP">-</span></div><div><small>FP</small><span id="thFP">-</span></div><div><small>FN</small><span id="thFN">-</span></div><div><small>TN</small><span id="thTN">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · picking a threshold from the precision–recall curve</span><button type="button">Copy</button></div><pre>import numpy as np
+from sklearn.metrics import precision_recall_curve, roc_auc_score
+
+scores = model.predict_proba(X_te)[:, 1]
+prec, rec, thr = precision_recall_curve(y_te, scores)
+
+# Example policy: the best threshold that still keeps recall at 95% or more
+ok = rec[:-1] &gt;= 0.95
+best = thr[ok][np.argmax(prec[:-1][ok])]
+print("threshold", best, "ROC AUC", roc_auc_score(y_te, scores))</pre></div>
+<div class="tips trap"><h4>Common traps</h4>
+<ul><li>Accuracy is misleading on imbalanced data. Report precision and recall, or PR-AUC, when positives are rare.</li><li>Tune the threshold on a validation set, never on the test set.</li><li>Probabilities from many models are not calibrated. If you need real probabilities, check a calibration plot and consider <code>CalibratedClassifierCV</code>.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="knn"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>k-nearest neighbours and decision boundaries</h2></div><label class="learned"><input type="checkbox" data-learn="knn"> Got it</label></div>
+<div class="prose">
+<p>k-NN has no training step. To classify a point it finds the <code>k</code> closest training points and takes a vote. It is a good way to <em>see</em> what a decision boundary is: the line where the predicted class flips.</p>
+<p>Small <code>k</code> gives a jagged boundary that follows every noisy point (low bias, high variance). Large <code>k</code> gives a smooth boundary that may ignore real structure (high bias, low variance). The same trade-off returns in every model you will meet.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Click to add points and move k</h3></div><p class="how">Pick a class and click the canvas to add a point. Training accuracy is always perfect at k = 1, because each point is its own neighbour. Leave-one-out accuracy is the honest number.</p>
+<canvas id="knnCv" style="aspect-ratio:1;max-width:540px;margin-inline:auto" aria-label="k-nearest neighbour decision regions"></canvas>
+<div class="ctl"><label>k <b id="knnKV">5</b><input id="knnK" type="range" min="1" max="31" step="2" value="5"></label>
+<label>Dataset<select id="knnD"><option value="moons">Two moons</option><option value="rings">Rings</option><option value="blobs">Blobs</option></select></label>
+<label>Noise <b id="knnNV">0.06</b><input id="knnN" type="range" min="0" max="0.2" step="0.01" value="0.06"></label>
+<div class="seg" role="group" aria-label="Class to add"><button type="button" id="knnA" aria-pressed="true">Add blue</button><button type="button" id="knnB" aria-pressed="false">Add orange</button></div></div>
+<div class="read"><div><small>Points</small><span id="knnCnt">-</span></div><div><small>Train accuracy</small><span id="knnTr">-</span></div><div><small>Leave-one-out</small><span id="knnLoo">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · choosing k by cross-validation</span><button type="button">Copy</button></div><pre>from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import GridSearchCV
+
+pipe = make_pipeline(StandardScaler(), KNeighborsClassifier())
+grid = GridSearchCV(pipe, {"kneighborsclassifier__n_neighbors": range(1, 32, 2)}, cv=5)
+grid.fit(X_tr, y_tr)
+print(grid.best_params_, grid.best_score_)</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Always scale features first. Distance is dominated by whichever feature has the biggest numbers.</li><li>k-NN suffers in high dimensions, where all points look about equally far apart. Use PCA or learned embeddings first.</li><li>It is slow at prediction time on big data. Approximate nearest-neighbour libraries (FAISS, ScaNN) fix that, and the same idea powers vector search for LLM apps.</li></ul>
+</div>
+<div class="tips"><h4>Industry now</h4><ul><li>Plain kNN rarely ships on large data. Its idea lives on as <strong>approximate nearest-neighbour search</strong> (HNSW, FAISS, vector databases) behind search, recommendations and RAG.</li></ul></div>
+</section>
+
+<section class="sec" id="trees"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>Decision trees, forests and boosting</h2></div><label class="learned"><input type="checkbox" data-learn="trees"> Got it</label></div>
+<div class="prose">
+<p>A decision tree asks a sequence of yes/no questions about the features ("is x &gt; 0.4?"). At each node it picks the split that makes the child groups purest, measured by Gini impurity <code>1 − Σ pₖ²</code> or entropy. It repeats until a stopping rule such as maximum depth is hit.</p>
+<p>A single deep tree memorises the training data. Two fixes dominate practice:</p>
+<ul><li><strong>Bagging / random forests</strong> train many trees on random resamples and random feature subsets, then average. This cuts variance.</li><li><strong>Gradient boosting</strong> (XGBoost, LightGBM, CatBoost, scikit-learn's <code>HistGradientBoosting</code>) adds small trees one at a time, each fitting the errors of the ensemble so far. This cuts bias, and it is usually the strongest option for tabular data.</li></ul>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Grow a tree and watch it overfit</h3></div><p class="how">Increase the depth. Hollow dots are test points the tree never saw. Training accuracy keeps climbing, but test accuracy stops, then often drops.</p>
+<canvas id="trCv" style="aspect-ratio:1;max-width:540px;margin-inline:auto" aria-label="Decision tree regions"></canvas>
+<div class="ctl"><label>Max depth <b id="trDV">2</b><input id="trD" type="range" min="1" max="10" step="1" value="2"></label>
+<label>Noise <b id="trNV">0.10</b><input id="trN" type="range" min="0" max="0.25" step="0.01" value="0.10"></label>
+<label>Dataset<select id="trK"><option value="moons">Two moons</option><option value="xor">XOR</option><option value="rings">Rings</option></select></label>
+<div class="btns"><button class="btn" id="trNew" type="button">New sample</button></div></div>
+<div class="read"><div><small>Leaves</small><span id="trLv">-</span></div><div><small>Train accuracy</small><span id="trTr">-</span></div><div><small>Test accuracy</small><span id="trTe">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · forest and boosted trees on tabular data</span><button type="button">Copy</button></div><pre>from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.inspection import permutation_importance
+
+rf = RandomForestClassifier(n_estimators=300, n_jobs=-1, random_state=0).fit(X_tr, y_tr)
+gb = HistGradientBoostingClassifier(learning_rate=0.1, max_depth=4,
+                                    early_stopping=True, random_state=0).fit(X_tr, y_tr)
+print("forest", rf.score(X_te, y_te), "boosting", gb.score(X_te, y_te))
+
+# Permutation importance is more trustworthy than impurity-based importance
+imp = permutation_importance(gb, X_te, y_te, n_repeats=10, random_state=0)
+top = imp.importances_mean.argsort()[::-1][:5]
+print(top, imp.importances_mean[top])</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Trees need no feature scaling and handle mixed feature types and missing values (in modern boosting libraries) well.</li><li>Trees cannot extrapolate. They predict a constant outside the range seen in training, which matters for trending time series.</li><li>For boosting, use a small learning rate with early stopping on a validation set rather than guessing the number of trees.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="kmeans"><div class="sec-head"><div><div class="kick">Concept 06</div><h2>Clustering with k-means</h2></div><label class="learned"><input type="checkbox" data-learn="kmeans"> Got it</label></div>
+<div class="prose">
+<p>k-means groups unlabelled points into <code>k</code> clusters by alternating two steps (Lloyd's algorithm): <strong>assign</strong> every point to its nearest centre, then <strong>update</strong> each centre to the mean of its points. Each round lowers the <em>inertia</em>, the total squared distance from points to their centres, until nothing moves.</p>
+<p>It always converges, but possibly to a poor local optimum, so the start matters. That is why libraries use k-means++ initialisation and several restarts. You also have to choose <code>k</code>. The elbow plot and the silhouette score are guides, not answers.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Step through Lloyd's algorithm</h3></div><p class="how">Press Step to alternate assign and update. Then press Scatter centres to restart from bad positions and see whether it finds the same answer. The right plot is the elbow curve for this data.</p>
+<div class="stage even"><canvas id="kmCv" style="aspect-ratio:1" aria-label="k-means clusters and centres"></canvas><canvas id="kmElbow" style="aspect-ratio:4/3" aria-label="Elbow curve of inertia against k"></canvas></div>
+<div class="ctl"><label>k <b id="kmKV">3</b><input id="kmK" type="range" min="1" max="8" step="1" value="3"></label>
+<div class="btns"><button class="btn primary" id="kmStep" type="button">Step</button><button class="btn" id="kmRun" type="button">Run to the end</button><button class="btn" id="kmInit" type="button">Scatter centres</button><button class="btn" id="kmNew" type="button">New data</button></div></div>
+<div class="read"><div><small>Next step</small><span id="kmPh">assign</span></div><div><small>Iteration</small><span id="kmIt">0</span></div><div><small>Inertia</small><span id="kmIn">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · PCA, k-means and the silhouette score</span><button type="button">Copy</button></div><pre>from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler
+
+Xs = StandardScaler().fit_transform(X)
+Z = PCA(n_components=2).fit_transform(Xs)        # 2-D view for plotting
+
+for k in range(2, 7):
+    km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(Xs)
+    print(k, round(km.inertia_), round(silhouette_score(Xs, km.labels_), 3))</pre></div>
+<div class="tips trap"><h4>Common traps</h4>
+<ul><li>k-means assumes round, similarly sized clusters. For odd shapes try DBSCAN or a Gaussian mixture model.</li><li>Features must be scaled, as with k-NN.</li><li>Clusters are a lens, not truth. Check them against domain knowledge before naming them.</li></ul>
+</div>
+<div class="tips"><h4>Industry now</h4><ul><li>k-means is common for customer segmentation, vector quantisation and clustering embeddings. For odd cluster shapes and noise, teams often use <strong>HDBSCAN</strong>. Always scale features and check clusters with a domain expert.</li></ul></div>
+</section>
+
+<section class="sec" id="biasvar"><div class="sec-head"><div><div class="kick">Concept 07</div><h2>Bias, variance and regularisation</h2></div><label class="learned"><input type="checkbox" data-learn="biasvar"> Got it</label></div>
+<div class="prose">
+<p>Test error has three parts: <strong>bias</strong> (the model is too simple to capture the pattern), <strong>variance</strong> (it is so flexible that it fits noise and changes wildly with a new sample), and irreducible noise. More flexibility lowers bias and raises variance, so test error is U-shaped while training error only falls.</p>
+<p><strong>Regularisation</strong> adds a penalty on large weights, <code>loss + λ·Σw²</code> (ridge / L2) or <code>λ·Σ|w|</code> (lasso / L1). It lets you keep a flexible model while taming variance.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Fit a curve and find the sweet spot</h3></div><p class="how">The dashed line is the true function, sin(2πx). Dots are 20 noisy training points. Raise the polynomial degree to chase the noise, then add regularisation to rein it back in. The right plot shows error against degree.</p>
+<div class="stage even"><canvas id="bvFit" style="aspect-ratio:4/3" aria-label="Polynomial fit to noisy data"></canvas><canvas id="bvErr" style="aspect-ratio:4/3" aria-label="Train and test error against degree"></canvas></div>
+<div class="legend"><span><i style="background:var(--c1)"></i>train error</span><span><i style="background:var(--c2)"></i>test error</span></div>
+<div class="ctl"><label>Polynomial degree <b id="bvDV">3</b><input id="bvD" type="range" min="0" max="12" step="1" value="3"></label>
+<label>Regularisation λ <b id="bvLV">0</b><input id="bvL" type="range" min="0" max="6" step="1" value="0"></label>
+<div class="btns"><button class="btn" id="bvNew" type="button">New noisy sample</button></div></div>
+<div class="read"><div><small>Train MSE</small><span id="bvTr">-</span></div><div><small>Test MSE</small><span id="bvTe">-</span></div><div><small>Verdict</small><span id="bvV">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · validation curve for polynomial degree</span><button type="button">Copy</button></div><pre>import numpy as np
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import validation_curve
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+
+rng = np.random.default_rng(0)
+x = rng.uniform(0, 1, (60, 1))
+y = np.sin(2 * np.pi * x[:, 0]) + rng.normal(0, 0.25, 60)
+
+pipe = make_pipeline(PolynomialFeatures(), StandardScaler(), Ridge(alpha=1e-3))
+tr, va = validation_curve(pipe, x, y, param_name="polynomialfeatures__degree",
+                          param_range=range(1, 13), cv=5,
+                          scoring="neg_mean_squared_error")
+print(-va.mean(axis=1).round(3))     # the U-shaped test error</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Gap between train and validation error large? That is variance: get more data, simplify, regularise or use bagging.</li><li>Both errors high? That is bias: add features, use a more flexible model or train longer.</li><li>More data is the one fix that helps variance without hurting bias, so plot a learning curve before collecting more.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="eval"><div class="sec-head"><div><div class="kick">Concept 08</div><h2>Evaluating honestly</h2></div><label class="learned"><input type="checkbox" data-learn="eval"> Got it</label></div>
+<div class="prose">
+<p>A model's score is only as trustworthy as the way it was measured. Use three data roles: <strong>train</strong> to fit, <strong>validation</strong> to choose models and hyperparameters, and a <strong>test</strong> set you touch once at the end. With little data, k-fold cross-validation reuses the data for validation.</p>
+<p><strong>Data leakage</strong> is when information from outside the training set sneaks in, giving optimistic scores that collapse in production. It is the most common reason a "great" model fails.</p>
+</div>
+<div class="tw"><table><thead><tr><th>Leak</th><th>Example</th><th>Fix</th></tr></thead><tbody>
+<tr><td>Preprocessing before the split</td><td>Scaling or imputing on the full dataset</td><td>Put steps in a Pipeline and fit on the training fold only</td></tr>
+<tr><td>Duplicate or near-duplicate rows</td><td>Same patient in train and test</td><td>Split by group (<code>GroupKFold</code>)</td></tr>
+<tr><td>Future information</td><td>Using next week's data to predict this week</td><td>Split by time; train on the past, test on the future</td></tr>
+<tr><td>Target in disguise</td><td>A feature computed from the label</td><td>Ask when each feature would be available at prediction time</td></tr>
+</tbody></table></div>
+<div class="code"><div class="code-h"><span>Python · cross-validation without leakage</span><button type="button">Copy</button></div><pre>from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+scores = cross_val_score(model, X, y, cv=cv, scoring="f1")   # model is the Pipeline from above
+print(scores.mean().round(3), "+/-", scores.std().round(3))</pre></div>
+<div class="tips"><h4>Learner tips</h4>
+<ul><li>Report a spread (standard deviation across folds), not only a mean. A 0.5-point gain inside the noise is not a gain.</li><li>Make the validation setup mirror deployment. If the model will see new users, validate on new users.</li><li>Fix the random seed while comparing models, so differences come from the models.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="others"><div class="sec-head"><div><div class="kick">Concept 09</div><h2>The rest of the classical toolbox</h2></div><label class="learned"><input type="checkbox" data-learn="others"> Got it</label></div>
+<div class="prose"><p>You will meet these constantly. Know what each is for, and reach for them when the simple option above is not enough.</p></div>
+<div class="tw"><table><thead><tr><th>Method</th><th>Idea</th><th>Good for</th><th>Watch out</th></tr></thead><tbody>
+<tr><td>SVM</td><td>Finds the widest-margin separator; kernels bend it</td><td>Small to medium, high-dimensional data</td><td>Slow on large data; needs scaling and tuning of C and gamma</td></tr>
+<tr><td>Naive Bayes</td><td>Bayes' rule with independent features</td><td>Fast text baselines</td><td>Probabilities are poorly calibrated</td></tr>
+<tr><td>Lasso / Elastic Net</td><td>Linear model with L1 penalty that zeroes weights</td><td>Feature selection, many correlated features</td><td>Pick λ by cross-validation</td></tr>
+<tr><td>PCA</td><td>Rotates data onto directions of most variance</td><td>Compression, denoising, plotting</td><td>Linear only; sensitive to scaling</td></tr>
+<tr><td>t-SNE / UMAP</td><td>Nonlinear 2-D maps that keep neighbours close</td><td>Exploring embeddings visually</td><td>Distances between far clusters are not meaningful</td></tr>
+<tr><td>DBSCAN</td><td>Clusters are dense regions; sparse points are noise</td><td>Odd cluster shapes, outliers</td><td>Struggles with varying density</td></tr>
+<tr><td>Gaussian mixture</td><td>Soft clusters as a mix of Gaussians</td><td>Overlapping clusters, density estimates</td><td>Needs the number of components</td></tr>
+<tr><td>Isolation forest</td><td>Outliers are isolated by few random splits</td><td>Anomaly detection</td><td>Contamination rate is a guess</td></tr>
+</tbody></table></div>
+<div class="tips"><h4>Industry now</h4><ul><li>For tabular data, <strong>gradient-boosted trees</strong> (XGBoost, LightGBM, CatBoost) are the default first model. SVMs and Naive Bayes are now mostly baselines. Linear and logistic models stay popular where explainability or speed matters.</li></ul></div>
+</section>
+
+<section class="sec" id="explain"><div class="sec-head"><div><div class="kick">Concept 10</div><h2>Explaining a model: permutation importance and SHAP</h2></div><label class="learned"><input type="checkbox" data-learn="explain"> Got it</label></div>
+<div class="prose">
+<p>Teams are often asked <em>why</em> a model made a prediction. Two standard tools:</p>
+<ul><li><strong>Permutation importance</strong> (global): shuffle one feature in held-out data and measure how much the error rises. A feature the model relies on hurts when destroyed.</li><li><strong>SHAP</strong> (per prediction): shares a prediction among the features using Shapley values from game theory, so the contributions add up to the output minus the average output. Fast exact versions exist for tree models.</li></ul>
+<div class="math">importance(j) = error( data with feature j shuffled ) − error( data )
+SHAP:  f(x) = base value + Σⱼ φⱼ(x)</div>
+<p>Beware of correlated features. If two features carry the same signal, a model may split its weight between them, and each looks half as important as the signal really is.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Importance with correlated features</h3></div><p class="how">The target depends on features 1 and 2 only. Feature 3 is a noisy copy of feature 1, and feature 4 is noise. Ridge regularisation makes the model share weight between correlated features.</p>
+<div class="ctl"><label>Correlation of feature 3 with feature 1 <b id="exCV">0.90</b><input id="exC" type="range" min="0" max="0.98" step="0.02" value="0.9"></label><label>Ridge strength <b id="exLV">150</b><input id="exL" type="range" min="0" max="800" step="10" value="150"></label><button class="btn" id="exNew" type="button">New data</button></div>
+<canvas id="exCv" style="aspect-ratio:21/8" aria-label="Permutation importance for four features"></canvas>
+<div class="read"><div><small>Model weights (f1, f2, f3, f4)</small><span id="exW">-</span></div><div><small>Held-out MSE</small><span id="exE">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · permutation importance and SHAP</span><button type="button">Copy</button></div><pre>from sklearn.inspection import permutation_importance
+import shap
+
+r = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=0, scoring="neg_mean_squared_error")
+for name, m, s in sorted(zip(X.columns, r.importances_mean, r.importances_std), key=lambda t: -t[1]):
+    print(f"{name:15s} {m:.4f} ± {s:.4f}")
+
+explainer = shap.TreeExplainer(gbm)              # exact and fast for tree ensembles
+sv = explainer(X_test)
+shap.plots.beeswarm(sv)                          # global view
+shap.plots.waterfall(sv[0])                      # why this one prediction</pre></div>
+<div class="tips"><h4>Explanations in practice</h4>
+<ul><li>Importance describes the <em>model</em>, not causes in the world. A feature can matter to a model without causing the outcome.</li><li>Compute importance on held-out data. On training data it can reward memorised features.</li><li>In regulated settings (credit, health) explanations and monitoring are often required, so plan for them early.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="mini"><div class="sec-head"><div><div class="kick">Concept 11</div><h2>Small but important concepts</h2></div><label class="learned"><input type="checkbox" data-learn="mini"> Got it</label></div>
+<div class="prose"><p>Short ideas that quietly decide whether a project works. Each has its formula and the one-line call you will actually write.</p></div>
+<div class="mini-grid">
+<div class="mini"><h4>Standardisation</h4><p>Centre each feature and give it unit spread so distance and gradient methods treat features fairly.</p><div class="math">z = (x − mean) / std</div><code class="i">StandardScaler().fit(X_train)</code></div>
+<div class="mini"><h4>Min–max scaling</h4><p>Squeeze a feature into a fixed range. Useful for pixels and bounded inputs.</p><div class="math">x' = (x − min) / (max − min)</div><code class="i">MinMaxScaler()</code></div>
+<div class="mini"><h4>One-hot encoding</h4><p>Turn a category into one 0/1 column per value so no false order is implied.</p><div class="math">red → [1,0,0], blue → [0,1,0]</div><code class="i">OneHotEncoder(handle_unknown='ignore')</code></div>
+<div class="mini"><h4>Missing values</h4><p>Impute with the median and add an indicator column, since missingness is often informative.</p><div class="math">x_missing = isnan(x)</div><code class="i">SimpleImputer(strategy='median', add_indicator=True)</code></div>
+<div class="mini"><h4>Class weights</h4><p>Penalise mistakes on the rare class more, as an alternative to resampling.</p><div class="math">w_c = N / (K · n_c)</div><code class="i">LogisticRegression(class_weight='balanced')</code></div>
+<div class="mini"><h4>Entropy</h4><p>How mixed a set of labels is, measured in bits. Trees choose splits that reduce it.</p><div class="math">H = − Σ p · log₂(p)</div><code class="i">-(p*np.log2(p)).sum()</code></div>
+<div class="mini"><h4>Bayes' rule</h4><p>Update a belief with evidence. The basis of Naive Bayes and of probabilistic thinking.</p><div class="math">P(A|B) = P(B|A) · P(A) / P(B)</div><code class="i">GaussianNB().fit(X, y)</code></div>
+<div class="mini"><h4>R² score</h4><p>Share of variance explained. 1 is perfect, 0 matches predicting the mean, and it can go negative.</p><div class="math">R² = 1 − SS_res / SS_tot</div><code class="i">r2_score(y_true, y_pred)</code></div>
+<div class="mini"><h4>MAE versus RMSE</h4><p>MAE is the typical miss. RMSE punishes large misses harder, so it reacts to outliers.</p><div class="math">MAE = mean|e|    RMSE = √mean(e²)</div><code class="i">mean_absolute_error(y, p)</code></div>
+<div class="mini"><h4>Cosine similarity</h4><p>Compares direction, not size. The standard way to compare embeddings.</p><div class="math">cos = a·b / (‖a‖ ‖b‖)</div><code class="i">a @ b / (norm(a) * norm(b))</code></div>
+<div class="mini"><h4>Log loss</h4><p>Cross-entropy for probabilities. It punishes confident wrong answers very hard.</p><div class="math">−mean( y·log p + (1−y)·log(1−p) )</div><code class="i">log_loss(y, p)</code></div>
+<div class="mini"><h4>Learning curve</h4><p>Plot score against training set size to learn whether more data would help.</p><div class="math">gap(train, val) shrinking → data helps</div><code class="i">learning_curve(model, X, y)</code></div>
+</div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="ml"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="ml.js"></script>
+</body></html>

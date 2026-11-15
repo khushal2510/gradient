@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="claude:viewport-fit-sides" content="cover"><title>Playbook · Gradient</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}</style>
+</head><body>
+<header id="topbar"></header>
+<div class="wrap hero"><div class="hero-copy"><p class="eyebrow">10 · Playbook</p>
+<h1>Tips, tricks and a <em>training doctor</em></h1>
+<p class="lead">The page you keep open in another tab. A symptom-to-cause guide for broken runs, a learning-rate range test you can run, hyperparameter defaults, a searchable glossary and a quiz to see what stuck.</p>
+<div class="chips"><span class="chip">debugging</span><span class="chip">LR range test</span><span class="chip">glossary</span><span class="chip">quiz</span></div>
+</div><canvas id="heroCv" data-art="checks" aria-label="Three loss curves: healthy, overfitting and noisy"></canvas>
+</div>
+<div class="wrap layout"><nav class="toc" id="toc" aria-label="On this page"></nav><main>
+
+<section class="sec" id="doctor"><div class="sec-head"><div><div class="kick">Concept 01</div><h2>Training doctor</h2></div><label class="learned"><input type="checkbox" data-learn="doctor"> Got it</label></div>
+<div class="prose"><p>Pick what you see. You get the usual causes in a sensible order to check, from cheapest to most expensive.</p></div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>What is your run doing?</h3></div><p class="how">Ordered from most to least likely. Check them top to bottom.</p>
+<div class="ctl"><label>Symptom<select id="drSym"></select></label></div>
+<div class="tips" id="drOut"></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · three checks that find most bugs</span><button type="button">Copy</button></div><pre>import torch, math
+
+# 1) Overfit one tiny batch. If the loss will not go to about zero, there is a bug.
+xb, yb = next(iter(train_loader))
+for step in range(200):
+    loss = loss_fn(model(xb), yb)
+    opt.zero_grad(); loss.backward(); opt.step()
+print("tiny-batch loss:", loss.item())
+
+# 2) Loss at initialisation should be about ln(number of classes) for balanced classification.
+print("expected:", math.log(num_classes))
+
+# 3) Look at gradient norms and check for NaNs.
+total = torch.sqrt(sum((p.grad ** 2).sum() for p in model.parameters() if p.grad is not None))
+print("grad norm:", total.item(), "any NaN:", any(torch.isnan(p).any() for p in model.parameters()))</pre></div>
+</section>
+
+<section class="sec" id="lrfind"><div class="sec-head"><div><div class="kick">Concept 02</div><h2>Find a learning rate: the range test</h2></div><label class="learned"><input type="checkbox" data-learn="lrfind"> Got it</label></div>
+<div class="prose">
+<p>The learning rate is the setting most worth tuning. The <strong>LR range test</strong> raises the learning rate exponentially during one short run and plots the loss. Pick a value a bit below where the loss stops falling and before it blows up. Here it runs on the line-fitting problem from the first page.</p>
+</div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Run a learning-rate range test</h3></div><p class="how">Each point is one gradient step with a larger learning rate than the one before. Training loss falls, then flattens, then explodes.</p>
+<canvas id="lrCv2" style="aspect-ratio:21/9" aria-label="Loss against learning rate on a log axis"></canvas>
+<div class="btns"><button class="btn primary" id="lrGo" type="button">Run the test again with new data</button></div>
+<div class="read"><div><small>Lowest loss reached at</small><span id="lrMin">-</span></div><div><small>Loss explodes near</small><span id="lrBlow">-</span></div><div><small>Suggested starting LR</small><span id="lrSug">-</span></div></div>
+</div>
+<div class="code"><div class="code-h"><span>Python · the range test in PyTorch</span><button type="button">Copy</button></div><pre>import torch
+
+def lr_range_test(model, loader, loss_fn, lr_min=1e-6, lr_max=1.0, steps=100):
+    opt = torch.optim.SGD(model.parameters(), lr=lr_min)
+    gamma = (lr_max / lr_min) ** (1 / steps)
+    lrs, losses, it = [], [], iter(loader)
+    for _ in range(steps):
+        try: x, y = next(it)
+        except StopIteration: it = iter(loader); x, y = next(it)
+        loss = loss_fn(model(x), y)
+        opt.zero_grad(); loss.backward(); opt.step()
+        lrs.append(opt.param_groups[0]["lr"]); losses.append(loss.item())
+        if not torch.isfinite(loss): break
+        for g in opt.param_groups: g["lr"] *= gamma           # exponential ramp
+    return lrs, losses            # plot losses against lrs on a log x-axis</pre></div>
+</section>
+
+<section class="sec" id="hp"><div class="sec-head"><div><div class="kick">Concept 03</div><h2>Hyperparameter starting points</h2></div><label class="learned"><input type="checkbox" data-learn="hp"> Got it</label></div>
+<div class="prose"><p>Defaults that are reasonable starting points, not laws. Change one thing at a time and log everything.</p></div>
+<div class="tw"><table><thead><tr><th>Setting</th><th>Starting point</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Optimiser</td><td>AdamW</td><td>SGD with momentum 0.9 is a strong alternative for vision models</td></tr>
+<tr><td>Learning rate (Adam)</td><td>1e-3 for small nets, 3e-4 to 1e-4 for transformers, 1e-5 to 5e-5 to fine-tune</td><td>Sweep on a log scale. Most sensitive setting</td></tr>
+<tr><td>Weight decay</td><td>0.01 to 0.1 (AdamW)</td><td>Skip for biases and normalisation parameters</td></tr>
+<tr><td>Batch size</td><td>32 to 256, as memory allows</td><td>Scale learning rate with batch size, and use gradient accumulation to fake larger batches</td></tr>
+<tr><td>Warmup</td><td>1% to 5% of steps</td><td>Important for transformers and large batch sizes</td></tr>
+<tr><td>Schedule</td><td>Cosine or linear decay to near zero</td><td>Short runs: one-cycle</td></tr>
+<tr><td>Dropout</td><td>0.1 to 0.3</td><td>Less when data is plentiful, and often 0 for large pretraining</td></tr>
+<tr><td>Gradient clipping</td><td>Max norm 1.0</td><td>RNNs, transformers, RL</td></tr>
+<tr><td>Initialisation</td><td>Kaiming (ReLU) or Xavier (tanh), library defaults are usually fine</td><td>Zero-init the last layer of residual branches in very deep nets</td></tr>
+<tr><td>Epochs</td><td>Until validation stops improving</td><td>Use early stopping and keep the best checkpoint</td></tr>
+</tbody></table></div>
+<div class="tips"><h4>Search strategy</h4>
+<ul><li>Random search beats grid search when only a few settings matter, which is common, because it tries more distinct values of each.</li><li>Tune on a small model or short run first, then scale. Check that the ranking holds.</li><li>Use several seeds before believing a difference. Run-to-run noise is often as large as the effect.</li></ul>
+</div>
+</section>
+
+<section class="sec" id="path"><div class="sec-head"><div><div class="kick">Concept 04</div><h2>Your progress through the site</h2></div><label class="learned"><input type="checkbox" data-learn="path"> Got it</label></div>
+<div class="prose"><p>Tick "Got it" on any concept in the other pages. This summary updates from those ticks, stored in this browser.</p></div>
+<div id="pathBox" class="bars"></div>
+</section>
+
+<section class="sec" id="glossary"><div class="sec-head"><div><div class="kick">Concept 05</div><h2>Glossary</h2></div><label class="learned"><input type="checkbox" data-learn="glossary"> Got it</label></div>
+<div class="ctl"><label style="flex-basis:100%">Search terms<input id="glQ" class="field" type="text" placeholder="Try: gradient, attention, KL, bias…"></label></div>
+<p class="note" id="glN"></p>
+<div id="glBox" class="mini-grid"></div>
+</section>
+
+<section class="sec" id="quiz"><div class="sec-head"><div><div class="kick">Concept 06</div><h2>Check yourself</h2></div><label class="learned"><input type="checkbox" data-learn="quiz"> Got it</label></div>
+<div class="demo"><div class="demo-h"><span class="tag">Try it</span><h3>Fourteen quick questions</h3></div><p class="how">Pick an answer to see why. Your score shows at the end.</p>
+<div class="q" id="qzBox"></div>
+</div>
+</section>
+
+<section class="sec" id="reading"><div class="sec-head"><div><div class="kick">Concept 07</div><h2>Where to go next</h2></div><label class="learned"><input type="checkbox" data-learn="reading"> Got it</label></div>
+<div class="prose"><p>The papers behind this site's topics. All are on arXiv, and the abstract plus the figures is usually the best first read.</p></div>
+<div class="tw"><table><thead><tr><th>Year</th><th>Paper</th><th>Topic</th></tr></thead><tbody>
+<tr><td>2014</td><td><a href="https://arxiv.org/abs/1412.6980">Adam: A Method for Stochastic Optimization</a></td><td>Optimiser</td></tr>
+<tr><td>2013</td><td><a href="https://arxiv.org/abs/1312.6114">Auto-Encoding Variational Bayes</a></td><td>VAE</td></tr>
+<tr><td>2014</td><td><a href="https://arxiv.org/abs/1406.2661">Generative Adversarial Networks</a></td><td>GAN</td></tr>
+<tr><td>2013</td><td><a href="https://arxiv.org/abs/1312.5602">Playing Atari with Deep Reinforcement Learning</a></td><td>DQN</td></tr>
+<tr><td>2015</td><td><a href="https://arxiv.org/abs/1512.03385">Deep Residual Learning for Image Recognition</a></td><td>ResNet</td></tr>
+<tr><td>2017</td><td><a href="https://arxiv.org/abs/1706.03762">Attention Is All You Need</a></td><td>Transformer</td></tr>
+<tr><td>2017</td><td><a href="https://arxiv.org/abs/1707.06347">Proximal Policy Optimization Algorithms</a></td><td>PPO</td></tr>
+<tr><td>2018</td><td><a href="https://arxiv.org/abs/1803.10122">World Models</a></td><td>World models</td></tr>
+<tr><td>2018</td><td><a href="https://arxiv.org/abs/1810.04805">BERT</a></td><td>Pretraining</td></tr>
+<tr><td>2019</td><td><a href="https://arxiv.org/abs/1911.08265">Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model (MuZero)</a></td><td>Learned model + search</td></tr>
+<tr><td>2020</td><td><a href="https://arxiv.org/abs/2006.11239">Denoising Diffusion Probabilistic Models</a></td><td>Diffusion</td></tr>
+<tr><td>2021</td><td><a href="https://arxiv.org/abs/2106.09685">LoRA: Low-Rank Adaptation of Large Language Models</a></td><td>Fine-tuning</td></tr>
+<tr><td>2021</td><td><a href="https://arxiv.org/abs/2111.00396">Efficiently Modeling Long Sequences with Structured State Spaces (S4)</a></td><td>State space models</td></tr>
+<tr><td>2022</td><td><a href="https://arxiv.org/abs/2203.15556">Training Compute-Optimal Large Language Models (Chinchilla)</a></td><td>Scaling</td></tr>
+<tr><td>2022</td><td><a href="https://arxiv.org/abs/2205.14135">FlashAttention</a></td><td>Efficient attention</td></tr>
+<tr><td>2023</td><td><a href="https://arxiv.org/abs/2301.04104">Mastering Diverse Domains through World Models (DreamerV3)</a></td><td>World models</td></tr>
+<tr><td>2023</td><td><a href="https://arxiv.org/abs/2312.00752">Mamba: Linear-Time Sequence Modeling with Selective State Spaces</a></td><td>State space models</td></tr>
+</tbody></table></div>
+</section>
+</main></div>
+<div class="wrap"><div class="pn" id="pn"></div></div>
+<footer id="foot"></footer>
+<script src="sections.js"></script><script>window.PAGE="play"</script>
+<script src="common.js"></script><script src="g3d.js"></script><script src="hero.js"></script>
+<script src="play.js"></script>
+</body></html>
